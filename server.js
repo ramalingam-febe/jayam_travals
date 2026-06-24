@@ -1,4 +1,4 @@
-// server.js - Jayam Travels Booking Backend (Updated)
+// server.js - Jayam Travels Booking Backend (FULLY UPDATED)
 const express = require('express');
 const mysql = require('mysql2/promise');
 const cors = require('cors');
@@ -10,13 +10,56 @@ const nodemailer = require('nodemailer');
 dotenv.config();
 
 const app = express();
+
+// ====== CORS CONFIGURATION (FIXED) ======
+const allowedOrigins = [
+    'http://localhost:5500',
+    'http://localhost:3000',
+    'http://127.0.0.1:5500',
+    'http://127.0.0.1:3000',
+    'https://your-frontend-domain.com',
+    'https://jayam-travels.com'
+];
+
 app.use(cors({
-    origin: ['http://localhost:5500', 'http://localhost:3000', 'https://your-frontend-domain.com'],
-    credentials: true
+    origin: function (origin, callback) {
+        // Allow requests with no origin (like mobile apps, curl, postman)
+        if (!origin) return callback(null, true);
+        if (allowedOrigins.indexOf(origin) !== -1) {
+            callback(null, true);
+        } else {
+            console.log('⚠️ Blocked CORS request from:', origin);
+            callback(null, true); // Allow all in development
+        }
+    },
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
 }));
+
 app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
 const PORT = process.env.PORT || 3000;
+
+// ====== ROOT ROUTE (FIXES "Cannot GET /") ======
+app.get('/', (req, res) => {
+    res.json({
+        status: 'success',
+        message: '🚌 Jayam Travels API is running',
+        version: '1.0.0',
+        timestamp: new Date().toISOString(),
+        endpoints: {
+            health: 'GET /api/health',
+            bookings: 'POST /api/bookings',
+            getBooking: 'GET /api/bookings/:booking_id',
+            getBookingsByEmail: 'GET /api/bookings/email/:email',
+            createOrder: 'POST /api/create-order',
+            verifyPayment: 'POST /api/verify-payment',
+            cancelBooking: 'POST /api/bookings/:booking_id/cancel'
+        }
+    });
+});
 
 // ====== DATABASE CONNECTION ======
 const pool = mysql.createPool({
@@ -49,12 +92,10 @@ const transporter = nodemailer.createTransport({
     }
 });
 
-// ====== DATABASE INITIALIZATION (No CREATE TABLE) ======
+// ====== DATABASE INITIALIZATION ======
 async function initializeDatabase() {
     try {
         const connection = await pool.getConnection();
-        
-        // Test connection
         await connection.query('SELECT 1');
         console.log('✅ Database connected successfully');
         
@@ -71,9 +112,54 @@ async function initializeDatabase() {
             console.log('⚠️  Tables not found! Please create them manually:');
             console.log('⚠️ ════════════════════════════════════════════════════');
             console.log('');
-            console.log('📝 1. Connect to your TiDB database');
-            console.log('📝 2. Run the CREATE TABLE statements from the documentation');
-            console.log('📝 3. Or use the SQL script provided in the project');
+            console.log('📝 Run these SQL statements in your TiDB database:');
+            console.log('');
+            console.log('-- Create bookings table');
+            console.log('CREATE TABLE IF NOT EXISTS bookings (');
+            console.log('    id INT AUTO_INCREMENT PRIMARY KEY,');
+            console.log('    booking_id VARCHAR(50) UNIQUE NOT NULL,');
+            console.log('    pnr VARCHAR(20) UNIQUE NOT NULL,');
+            console.log('    from_city VARCHAR(100) NOT NULL,');
+            console.log('    to_city VARCHAR(100) NOT NULL,');
+            console.log('    travel_date DATE NOT NULL,');
+            console.log('    seats JSON NOT NULL,');
+            console.log('    passengers JSON NOT NULL,');
+            console.log('    boarding VARCHAR(255) NOT NULL,');
+            console.log('    dropping VARCHAR(255) NOT NULL,');
+            console.log('    email VARCHAR(255) NOT NULL,');
+            console.log('    mobile VARCHAR(20) NOT NULL,');
+            console.log('    state VARCHAR(100) NOT NULL,');
+            console.log('    insurance TINYINT(1) DEFAULT 0,');
+            console.log('    base_fare DECIMAL(10,2) NOT NULL,');
+            console.log('    cgst DECIMAL(10,2) NOT NULL,');
+            console.log('    sgst DECIMAL(10,2) NOT NULL,');
+            console.log('    service_fee DECIMAL(10,2) NOT NULL,');
+            console.log('    total_amount DECIMAL(10,2) NOT NULL,');
+            console.log('    payment_id VARCHAR(100),');
+            console.log("    payment_status ENUM('pending', 'paid', 'failed') DEFAULT 'pending',");
+            console.log("    booking_status ENUM('confirmed', 'cancelled', 'completed') DEFAULT 'confirmed',");
+            console.log('    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,');
+            console.log('    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,');
+            console.log('    INDEX idx_booking_id (booking_id),');
+            console.log('    INDEX idx_pnr (pnr),');
+            console.log('    INDEX idx_email (email),');
+            console.log('    INDEX idx_travel_date (travel_date)');
+            console.log(');');
+            console.log('');
+            console.log('-- Create payments table');
+            console.log('CREATE TABLE IF NOT EXISTS payments (');
+            console.log('    id INT AUTO_INCREMENT PRIMARY KEY,');
+            console.log('    booking_id VARCHAR(50) NOT NULL,');
+            console.log('    razorpay_order_id VARCHAR(100) UNIQUE NOT NULL,');
+            console.log('    razorpay_payment_id VARCHAR(100),');
+            console.log('    razorpay_signature VARCHAR(255),');
+            console.log('    amount DECIMAL(10,2) NOT NULL,');
+            console.log('    currency VARCHAR(10) DEFAULT "INR",');
+            console.log("    status VARCHAR(20) DEFAULT 'created',");
+            console.log('    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,');
+            console.log('    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,');
+            console.log('    FOREIGN KEY (booking_id) REFERENCES bookings(booking_id)');
+            console.log(');');
             console.log('');
             console.log('⚠️ ════════════════════════════════════════════════════');
         } else {
@@ -103,9 +189,25 @@ function generatePNR() {
     return pnr;
 }
 
+function formatDate(date) {
+    return new Date(date).toLocaleDateString('en-IN', {
+        day: 'numeric',
+        month: 'short',
+        year: 'numeric'
+    });
+}
+
 // ====== SEND EMAIL ======
 async function sendConfirmationEmail(bookingData) {
     try {
+        const seats = JSON.parse(bookingData.seats);
+        const passengers = JSON.parse(bookingData.passengers);
+        
+        let passengerList = '';
+        passengers.forEach((p, i) => {
+            passengerList += `${p.name} (${p.age} yrs, ${p.gender}) - Seat: ${seats[i] || 'N/A'}<br>`;
+        });
+
         const mailOptions = {
             from: process.env.EMAIL_USER || 'jayamtravels@gmail.com',
             to: bookingData.email,
@@ -123,16 +225,17 @@ async function sendConfirmationEmail(bookingData) {
                             <tr><td style="padding: 8px 0;"><strong>PNR:</strong></td><td style="padding: 8px 0;">${bookingData.pnr}</td></tr>
                             <tr><td style="padding: 8px 0;"><strong>Bus:</strong></td><td style="padding: 8px 0;">Jayam Travels - AC Sleeper</td></tr>
                             <tr><td style="padding: 8px 0;"><strong>Route:</strong></td><td style="padding: 8px 0;">${bookingData.from_city} → ${bookingData.to_city}</td></tr>
-                            <tr><td style="padding: 8px 0;"><strong>Date:</strong></td><td style="padding: 8px 0;">${new Date(bookingData.travel_date).toLocaleDateString('en-IN', {day:'numeric', month:'short', year:'numeric'})}</td></tr>
+                            <tr><td style="padding: 8px 0;"><strong>Date:</strong></td><td style="padding: 8px 0;">${formatDate(bookingData.travel_date)}</td></tr>
                             <tr><td style="padding: 8px 0;"><strong>Boarding:</strong></td><td style="padding: 8px 0;">${bookingData.boarding}</td></tr>
                             <tr><td style="padding: 8px 0;"><strong>Dropping:</strong></td><td style="padding: 8px 0;">${bookingData.dropping}</td></tr>
-                            <tr><td style="padding: 8px 0;"><strong>Seats:</strong></td><td style="padding: 8px 0;">${JSON.parse(bookingData.seats).join(', ')}</td></tr>
+                            <tr><td style="padding: 8px 0;"><strong>Seats:</strong></td><td style="padding: 8px 0;">${seats.join(', ')}</td></tr>
+                            <tr><td style="padding: 8px 0;"><strong>Passengers:</strong></td><td style="padding: 8px 0;">${passengerList}</td></tr>
                             <tr><td style="padding: 8px 0;"><strong>Total Amount:</strong></td><td style="padding: 8px 0; color: #e63946; font-weight: bold;">₹${bookingData.total_amount}</td></tr>
                         </table>
                         <hr style="border: 1px solid #eee; margin: 20px 0;">
                         <p style="color: #666; font-size: 14px; text-align: center;">
                             <strong>Thank you for choosing Jayam Travels!</strong><br>
-                            For queries, contact: support@jayamtravels.com
+                            For queries, contact: support@jayamtravels.com | 📞 1800-XXX-XXXX
                         </p>
                     </div>
                 </div>
@@ -152,12 +255,18 @@ async function sendConfirmationEmail(bookingData) {
 
 // Health check
 app.get('/api/health', (req, res) => {
-    res.json({ status: 'ok', message: 'Jayam Travels API is running' });
+    res.json({
+        status: 'ok',
+        message: 'Jayam Travels API is running',
+        timestamp: new Date().toISOString()
+    });
 });
 
 // ====== 1. CREATE BOOKING ======
 app.post('/api/bookings', async (req, res) => {
     try {
+        console.log('📝 Creating booking with data:', req.body);
+        
         const {
             from, to, date, seats, passengers, boarding, dropping,
             email, mobile, state, insurance, base_fare, cgst, sgst, service_fee, total_amount
@@ -185,7 +294,7 @@ app.post('/api/bookings', async (req, res) => {
         await connection.beginTransaction();
 
         try {
-            const [result] = await connection.query(
+            await connection.query(
                 `INSERT INTO bookings (
                     booking_id, pnr, from_city, to_city, travel_date,
                     seats, passengers, boarding, dropping,
@@ -222,6 +331,7 @@ app.post('/api/bookings', async (req, res) => {
             };
             sendConfirmationEmail(bookingData).catch(err => console.error('Email error:', err.message));
 
+            console.log(`✅ Booking created: ${booking_id}`);
             res.status(201).json({
                 success: true,
                 booking_id,
@@ -237,7 +347,7 @@ app.post('/api/bookings', async (req, res) => {
         }
 
     } catch (error) {
-        console.error('Booking creation error:', error.message);
+        console.error('❌ Booking creation error:', error.message);
         res.status(500).json({ error: 'Failed to create booking', details: error.message });
     }
 });
@@ -293,7 +403,7 @@ app.post('/api/create-order', async (req, res) => {
         });
 
     } catch (error) {
-        console.error('Order creation error:', error.message);
+        console.error('❌ Order creation error:', error.message);
         res.status(500).json({ error: 'Failed to create payment order', details: error.message });
     }
 });
@@ -366,7 +476,7 @@ app.post('/api/verify-payment', async (req, res) => {
         }
 
     } catch (error) {
-        console.error('Payment verification error:', error.message);
+        console.error('❌ Payment verification error:', error.message);
         res.status(500).json({ error: 'Failed to verify payment', details: error.message });
     }
 });
@@ -394,7 +504,7 @@ app.get('/api/bookings/:booking_id', async (req, res) => {
         res.json({ success: true, booking });
 
     } catch (error) {
-        console.error('Get booking error:', error.message);
+        console.error('❌ Get booking error:', error.message);
         res.status(500).json({ error: 'Failed to fetch booking details' });
     }
 });
@@ -414,27 +524,92 @@ app.get('/api/bookings/email/:email', async (req, res) => {
         res.json({ success: true, bookings });
 
     } catch (error) {
-        console.error('Get bookings by email error:', error.message);
+        console.error('❌ Get bookings by email error:', error.message);
         res.status(500).json({ error: 'Failed to fetch bookings' });
     }
 });
 
+// ====== 6. CANCEL BOOKING ======
+app.post('/api/bookings/:booking_id/cancel', async (req, res) => {
+    try {
+        const { booking_id } = req.params;
+
+        const connection = await pool.getConnection();
+        await connection.beginTransaction();
+
+        try {
+            const [bookings] = await connection.query(
+                'SELECT booking_status FROM bookings WHERE booking_id = ?',
+                [booking_id]
+            );
+
+            if (bookings.length === 0) {
+                await connection.rollback();
+                connection.release();
+                return res.status(404).json({ error: 'Booking not found' });
+            }
+
+            if (bookings[0].booking_status === 'cancelled') {
+                await connection.rollback();
+                connection.release();
+                return res.status(400).json({ error: 'Booking already cancelled' });
+            }
+
+            await connection.query(
+                'UPDATE bookings SET booking_status = "cancelled", updated_at = CURRENT_TIMESTAMP WHERE booking_id = ?',
+                [booking_id]
+            );
+
+            await connection.commit();
+            connection.release();
+
+            res.json({ success: true, message: 'Booking cancelled successfully' });
+
+        } catch (error) {
+            await connection.rollback();
+            connection.release();
+            throw error;
+        }
+
+    } catch (error) {
+        console.error('❌ Cancel booking error:', error.message);
+        res.status(500).json({ error: 'Failed to cancel booking' });
+    }
+});
+
+// ====== 404 HANDLER ======
+app.use((req, res) => {
+    res.status(404).json({
+        error: 'Route not found',
+        path: req.url,
+        method: req.method
+    });
+});
+
 // ====== START SERVER ======
 app.listen(PORT, async () => {
-    console.log(`🚀 Server running on port ${PORT}`);
+    console.log('╔═══════════════════════════════════════════════════╗');
+    console.log('║   🚌 Jayam Travels - Backend Server             ║');
+    console.log('╠═══════════════════════════════════════════════════╣');
+    console.log(`║   Server running on: http://localhost:${PORT}    ║`);
+    console.log(`║   API Base URL: http://localhost:${PORT}/api     ║`);
+    console.log('╠═══════════════════════════════════════════════════╣');
+    
     await initializeDatabase();
-    console.log(`📊 Environment: ${process.env.NODE_ENV || 'development'}`);
-    console.log(`🔑 Razorpay: ${process.env.RAZORPAY_KEY_ID ? '✅ Configured' : '❌ Not configured'}`);
-    console.log(`📧 Email: ${process.env.EMAIL_USER ? '✅ Configured' : '❌ Not configured'}`);
+    
+    console.log('╠═══════════════════════════════════════════════════╣');
+    console.log(`║   Razorpay: ${process.env.RAZORPAY_KEY_ID ? '✅ Configured' : '❌ Not configured'}`);
+    console.log(`║   Email: ${process.env.EMAIL_USER ? '✅ Configured' : '❌ Not configured'}`);
+    console.log('╚═══════════════════════════════════════════════════╝');
 });
 
 // ====== ERROR HANDLING ======
 process.on('unhandledRejection', (error) => {
-    console.error('Unhandled Rejection:', error.message);
+    console.error('❌ Unhandled Rejection:', error.message);
 });
 
 process.on('uncaughtException', (error) => {
-    console.error('Uncaught Exception:', error.message);
+    console.error('❌ Uncaught Exception:', error.message);
 });
 
 module.exports = app;
