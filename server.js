@@ -1,4 +1,6 @@
-// server.js - Jayam Travels Booking Backend (COMPLETE VERSION)
+// server.js - Jayam Travels Booking Backend
+// Deploy on Render with TiDB MySQL and Razorpay
+
 const express = require('express');
 const mysql = require('mysql2/promise');
 const cors = require('cors');
@@ -13,12 +15,9 @@ const app = express();
 
 // ====== CORS CONFIGURATION ======
 app.use(cors({
-    origin: '*',
-    credentials: true,
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
+    origin: ['http://localhost:5500', 'http://localhost:3000', 'https://jayam-travals.onrender.com', 'https://jayam-travels.com', '*'],
+    credentials: true
 }));
-
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
@@ -44,11 +43,11 @@ app.get('/', (req, res) => {
     });
 });
 
-// ====== DATABASE CONNECTION ======
+// ====== DATABASE CONNECTION (TiDB) ======
 const pool = mysql.createPool({
     host: process.env.DB_HOST || 'gateway01.ap-northeast-1.prod.aws.tidbcloud.com',
     port: process.env.DB_PORT || 4000,
-    user: process.env.DB_USER || 'your_user',
+    user: process.env.DB_USER || '2bEem2Bk4wszYxL.root',
     password: process.env.DB_PASSWORD || 'your_password',
     database: process.env.DB_NAME || 'jayam_travels',
     ssl: {
@@ -60,13 +59,13 @@ const pool = mysql.createPool({
     queueLimit: 0
 });
 
-// ====== RAZORPAY ======
+// ====== RAZORPAY INITIALIZATION ======
 const razorpay = new Razorpay({
     key_id: process.env.RAZORPAY_KEY_ID || 'rzp_test_xxxxxxxxxx',
     key_secret: process.env.RAZORPAY_KEY_SECRET || 'xxxxxxxxxxxxxxxxxxxx'
 });
 
-// ====== EMAIL ======
+// ====== EMAIL CONFIGURATION ======
 const transporter = nodemailer.createTransport({
     service: 'gmail',
     auth: {
@@ -97,16 +96,33 @@ function formatDate(date) {
     });
 }
 
+// ====== CHECK IF TABLES EXIST ======
+async function checkTablesExist(connection) {
+    try {
+        const [tables] = await connection.query(
+            "SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = ? AND TABLE_NAME IN ('bookings', 'payments')",
+            [process.env.DB_NAME || 'jayam_travels']
+        );
+        return tables.map(t => t.TABLE_NAME);
+    } catch (error) {
+        console.error('❌ Error checking tables:', error.message);
+        return [];
+    }
+}
+
 // ====== SEND CONFIRMATION EMAIL ======
 async function sendConfirmationEmail(bookingData) {
     try {
-        const seats = JSON.parse(bookingData.seats);
-        const passengers = JSON.parse(bookingData.passengers);
+        const seats = typeof bookingData.seats === 'string' ? JSON.parse(bookingData.seats) : bookingData.seats;
+        const passengers = typeof bookingData.passengers === 'string' ? JSON.parse(bookingData.passengers) : bookingData.passengers;
         
         let passengerList = '';
-        passengers.forEach((p, i) => {
-            passengerList += `${p.name} (${p.age} yrs, ${p.gender}) - Seat: ${seats[i] || 'N/A'}<br>`;
-        });
+        if (Array.isArray(passengers)) {
+            passengers.forEach((p, i) => {
+                const seat = Array.isArray(seats) ? seats[i] || 'N/A' : 'N/A';
+                passengerList += `${p.name} (${p.age} yrs, ${p.gender}) - Seat: ${seat}<br>`;
+            });
+        }
 
         const mailOptions = {
             from: process.env.EMAIL_USER || 'jayamtravels@gmail.com',
@@ -128,7 +144,7 @@ async function sendConfirmationEmail(bookingData) {
                             <tr><td style="padding: 8px 0;"><strong>Date:</strong></td><td style="padding: 8px 0;">${formatDate(bookingData.travel_date)}</td></tr>
                             <tr><td style="padding: 8px 0;"><strong>Boarding:</strong></td><td style="padding: 8px 0;">${bookingData.boarding}</td></tr>
                             <tr><td style="padding: 8px 0;"><strong>Dropping:</strong></td><td style="padding: 8px 0;">${bookingData.dropping}</td></tr>
-                            <tr><td style="padding: 8px 0;"><strong>Seats:</strong></td><td style="padding: 8px 0;">${seats.join(', ')}</td></tr>
+                            <tr><td style="padding: 8px 0;"><strong>Seats:</strong></td><td style="padding: 8px 0;">${Array.isArray(seats) ? seats.join(', ') : seats}</td></tr>
                             <tr><td style="padding: 8px 0;"><strong>Passengers:</strong></td><td style="padding: 8px 0;">${passengerList}</td></tr>
                             <tr><td style="padding: 8px 0;"><strong>Total Amount:</strong></td><td style="padding: 8px 0; color: #e63946; font-weight: bold;">₹${bookingData.total_amount}</td></tr>
                         </table>
@@ -151,96 +167,85 @@ async function sendConfirmationEmail(bookingData) {
     }
 }
 
-// ====== DATABASE INITIALIZATION ======
+// ====== DATABASE INITIALIZATION (WITHOUT CREATE TABLE) ======
 async function initializeDatabase() {
     let connection;
     try {
         connection = await pool.getConnection();
         console.log('✅ Database connected successfully');
         
-        // Check if database exists
-        const [databases] = await connection.query(
-            "SELECT SCHEMA_NAME FROM INFORMATION_SCHEMA.SCHEMATA WHERE SCHEMA_NAME = ?",
-            [process.env.DB_NAME || 'jayam_travels']
-        );
-        
-        if (databases.length === 0) {
-            console.log(`⚠️ Database '${process.env.DB_NAME}' not found. Creating...`);
-            await connection.query(`CREATE DATABASE IF NOT EXISTS ${process.env.DB_NAME}`);
-            console.log(`✅ Database '${process.env.DB_NAME}' created`);
-            await connection.query(`USE ${process.env.DB_NAME}`);
-        }
-        
         // Check if tables exist
-        const [tables] = await connection.query(
-            "SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = ?",
-            [process.env.DB_NAME || 'jayam_travels']
-        );
+        const existingTables = await checkTablesExist(connection);
         
-        const existingTables = tables.map(t => t.TABLE_NAME);
-        console.log('📊 Existing tables:', existingTables);
-        
-        // Create bookings table if not exists
-        if (!existingTables.includes('bookings')) {
-            console.log('📝 Creating bookings table...');
-            await connection.query(`
-                CREATE TABLE IF NOT EXISTS bookings (
-                    id INT AUTO_INCREMENT PRIMARY KEY,
-                    booking_id VARCHAR(50) UNIQUE NOT NULL,
-                    pnr VARCHAR(20) UNIQUE NOT NULL,
-                    from_city VARCHAR(100) NOT NULL,
-                    to_city VARCHAR(100) NOT NULL,
-                    travel_date DATE NOT NULL,
-                    seats JSON NOT NULL,
-                    passengers JSON NOT NULL,
-                    boarding VARCHAR(255) NOT NULL,
-                    dropping VARCHAR(255) NOT NULL,
-                    email VARCHAR(255) NOT NULL,
-                    mobile VARCHAR(20) NOT NULL,
-                    state VARCHAR(100) NOT NULL,
-                    insurance TINYINT(1) DEFAULT 0,
-                    base_fare DECIMAL(10,2) NOT NULL,
-                    cgst DECIMAL(10,2) NOT NULL,
-                    sgst DECIMAL(10,2) NOT NULL,
-                    service_fee DECIMAL(10,2) NOT NULL,
-                    total_amount DECIMAL(10,2) NOT NULL,
-                    payment_id VARCHAR(100),
-                    payment_status ENUM('pending', 'paid', 'failed') DEFAULT 'pending',
-                    booking_status ENUM('confirmed', 'cancelled', 'completed') DEFAULT 'confirmed',
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-                    INDEX idx_booking_id (booking_id),
-                    INDEX idx_pnr (pnr),
-                    INDEX idx_email (email),
-                    INDEX idx_travel_date (travel_date)
-                )
-            `);
-            console.log('✅ Bookings table created');
+        if (existingTables.length === 0) {
+            console.log('⚠️ ════════════════════════════════════════════════════');
+            console.log('⚠️  TABLES NOT FOUND! Please create them manually:');
+            console.log('⚠️ ════════════════════════════════════════════════════');
+            console.log('');
+            console.log('📝 1. Go to TiDB Cloud Web UI or use MySQL client');
+            console.log('📝 2. Connect to your database');
+            console.log('📝 3. Run the SQL script below:');
+            console.log('');
+            console.log('-- ====== CREATE TABLES SQL ======');
+            console.log(`USE ${process.env.DB_NAME || 'jayam_travels'};`);
+            console.log('');
+            console.log(`CREATE TABLE IF NOT EXISTS bookings (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                booking_id VARCHAR(50) UNIQUE NOT NULL,
+                pnr VARCHAR(20) UNIQUE NOT NULL,
+                from_city VARCHAR(100) NOT NULL,
+                to_city VARCHAR(100) NOT NULL,
+                travel_date DATE NOT NULL,
+                seats JSON NOT NULL,
+                passengers JSON NOT NULL,
+                boarding VARCHAR(255) NOT NULL,
+                dropping VARCHAR(255) NOT NULL,
+                email VARCHAR(255) NOT NULL,
+                mobile VARCHAR(20) NOT NULL,
+                state VARCHAR(100) NOT NULL,
+                insurance TINYINT(1) DEFAULT 0,
+                base_fare DECIMAL(10,2) NOT NULL,
+                cgst DECIMAL(10,2) NOT NULL,
+                sgst DECIMAL(10,2) NOT NULL,
+                service_fee DECIMAL(10,2) NOT NULL,
+                total_amount DECIMAL(10,2) NOT NULL,
+                payment_id VARCHAR(100),
+                payment_status ENUM('pending', 'paid', 'failed') DEFAULT 'pending',
+                booking_status ENUM('confirmed', 'cancelled', 'completed') DEFAULT 'confirmed',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                INDEX idx_booking_id (booking_id),
+                INDEX idx_pnr (pnr),
+                INDEX idx_email (email),
+                INDEX idx_travel_date (travel_date)
+            );`);
+            console.log('');
+            console.log(`CREATE TABLE IF NOT EXISTS payments (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                booking_id VARCHAR(50) NOT NULL,
+                razorpay_order_id VARCHAR(100) UNIQUE NOT NULL,
+                razorpay_payment_id VARCHAR(100),
+                razorpay_signature VARCHAR(255),
+                amount DECIMAL(10,2) NOT NULL,
+                currency VARCHAR(10) DEFAULT 'INR',
+                status VARCHAR(20) DEFAULT 'created',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                FOREIGN KEY (booking_id) REFERENCES bookings(booking_id) ON DELETE CASCADE
+            );`);
+            console.log('');
+            console.log('⚠️ ════════════════════════════════════════════════════');
+            console.log('⚠️  After creating tables, restart the server');
+            console.log('⚠️ ════════════════════════════════════════════════════');
+            
+            connection.release();
+            return false;
         }
         
-        // Create payments table if not exists
-        if (!existingTables.includes('payments')) {
-            console.log('📝 Creating payments table...');
-            await connection.query(`
-                CREATE TABLE IF NOT EXISTS payments (
-                    id INT AUTO_INCREMENT PRIMARY KEY,
-                    booking_id VARCHAR(50) NOT NULL,
-                    razorpay_order_id VARCHAR(100) UNIQUE NOT NULL,
-                    razorpay_payment_id VARCHAR(100),
-                    razorpay_signature VARCHAR(255),
-                    amount DECIMAL(10,2) NOT NULL,
-                    currency VARCHAR(10) DEFAULT 'INR',
-                    status VARCHAR(20) DEFAULT 'created',
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-                    FOREIGN KEY (booking_id) REFERENCES bookings(booking_id) ON DELETE CASCADE
-                )
-            `);
-            console.log('✅ Payments table created');
-        }
-        
+        console.log('✅ Tables found:', existingTables.join(', '));
         connection.release();
         return true;
+        
     } catch (error) {
         console.error('❌ Database initialization error:', error.message);
         if (connection) connection.release();
@@ -252,8 +257,8 @@ async function initializeDatabase() {
 
 // Health check
 app.get('/api/health', (req, res) => {
-    res.json({
-        status: 'ok',
+    res.json({ 
+        status: 'ok', 
         message: 'Jayam Travels API is running',
         timestamp: new Date().toISOString()
     });
@@ -368,7 +373,7 @@ app.post('/api/bookings', async (req, res) => {
 
         console.log('📝 Executing query...');
         const [result] = await connection.query(query, values);
-        console.log('✅ Query executed successfully:', result);
+        console.log('✅ Query executed successfully');
 
         // Commit transaction
         await connection.commit();
@@ -683,76 +688,6 @@ app.post('/api/bookings/:booking_id/cancel', async (req, res) => {
     }
 });
 
-// ====== 7. RAZORPAY WEBHOOK ======
-app.post('/api/webhook/razorpay', async (req, res) => {
-    let connection;
-    try {
-        const webhookSecret = process.env.RAZORPAY_WEBHOOK_SECRET || 'your_webhook_secret';
-        const signature = req.headers['x-razorpay-signature'];
-
-        // Verify webhook signature
-        const expectedSignature = crypto
-            .createHmac('sha256', webhookSecret)
-            .update(JSON.stringify(req.body))
-            .digest('hex');
-
-        if (signature !== expectedSignature) {
-            return res.status(400).json({ error: 'Invalid webhook signature' });
-        }
-
-        const event = req.body.event;
-        const payload = req.body.payload;
-
-        if (event === 'payment.captured') {
-            const payment = payload.payment.entity;
-            const orderId = payment.order_id;
-            const paymentId = payment.id;
-
-            connection = await pool.getConnection();
-            
-            // Update payment status
-            await connection.query(
-                'UPDATE payments SET razorpay_payment_id = ?, status = "paid", updated_at = CURRENT_TIMESTAMP WHERE razorpay_order_id = ?',
-                [paymentId, orderId]
-            );
-
-            // Get booking_id from payment
-            const [payments] = await connection.query(
-                'SELECT booking_id FROM payments WHERE razorpay_order_id = ?',
-                [orderId]
-            );
-
-            if (payments.length > 0) {
-                const booking_id = payments[0].booking_id;
-                await connection.query(
-                    'UPDATE bookings SET payment_status = "paid", updated_at = CURRENT_TIMESTAMP WHERE booking_id = ?',
-                    [booking_id]
-                );
-
-                // Send confirmation email
-                const [bookings] = await connection.query(
-                    'SELECT * FROM bookings WHERE booking_id = ?',
-                    [booking_id]
-                );
-                if (bookings.length > 0) {
-                    sendConfirmationEmail(bookings[0]).catch(err => {
-                        console.error('❌ Email error:', err.message);
-                    });
-                }
-            }
-
-            connection.release();
-        }
-
-        res.json({ success: true });
-
-    } catch (error) {
-        console.error('❌ Webhook error:', error.message);
-        if (connection) connection.release();
-        res.status(500).json({ error: 'Webhook processing failed' });
-    }
-});
-
 // ====== 404 HANDLER ======
 app.use((req, res) => {
     res.status(404).json({
@@ -776,11 +711,11 @@ app.listen(PORT, async () => {
     console.log('╔═══════════════════════════════════════════════════╗');
     console.log('║   🚌 Jayam Travels - Backend Server             ║');
     console.log('╠═══════════════════════════════════════════════════╣');
-    console.log(`║   Server running on: http://localhost:${PORT}    ║`);
+    console.log(`║   Server running on: http://localhost:${PORT}    ║');
     console.log(`║   API Base URL: http://localhost:${PORT}/api     ║`);
     console.log('╠═══════════════════════════════════════════════════╣');
     
-    // Initialize database
+    // Initialize database (checks tables, doesn't create)
     await initializeDatabase();
     
     console.log('╠═══════════════════════════════════════════════════╣');
@@ -792,12 +727,10 @@ app.listen(PORT, async () => {
 // ====== UNHANDLED REJECTIONS ======
 process.on('unhandledRejection', (error) => {
     console.error('❌ Unhandled Rejection:', error.message);
-    console.error(error.stack);
 });
 
 process.on('uncaughtException', (error) => {
     console.error('❌ Uncaught Exception:', error.message);
-    console.error(error.stack);
 });
 
 module.exports = app;
