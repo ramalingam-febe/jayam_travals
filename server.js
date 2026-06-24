@@ -1,4 +1,4 @@
-// server.js - Jayam Travels Booking Backend (Complete Debug Version)
+// server.js - Jayam Travels Booking Backend (PROFESSIONAL VERSION)
 const express = require('express');
 const mysql = require('mysql2/promise');
 const cors = require('cors');
@@ -11,8 +11,9 @@ dotenv.config();
 
 const app = express();
 
+// ====== CORS CONFIGURATION ======
 app.use(cors({
-    origin: '*',
+    origin: ['http://localhost:5500', 'http://localhost:3000', 'https://*.onrender.com'],
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
@@ -22,13 +23,119 @@ app.use(express.urlencoded({ extended: true }));
 
 const PORT = process.env.PORT || 3000;
 
+// ====== VALIDATE ENVIRONMENT VARIABLES ======
+function validateEnvironment() {
+    const errors = [];
+    const warnings = [];
+
+    // Check Database
+    if (!process.env.DB_HOST) errors.push('DB_HOST is not set');
+    if (!process.env.DB_USER) errors.push('DB_USER is not set');
+    if (!process.env.DB_PASSWORD) errors.push('DB_PASSWORD is not set');
+    if (!process.env.DB_NAME) errors.push('DB_NAME is not set');
+
+    // Check Razorpay (Critical for payments)
+    if (!process.env.RAZORPAY_KEY_ID || process.env.RAZORPAY_KEY_ID === 'rzp_test_xxxxxxxxxx') {
+        errors.push('RAZORPAY_KEY_ID is not configured properly');
+    }
+    if (!process.env.RAZORPAY_KEY_SECRET || process.env.RAZORPAY_KEY_SECRET === 'xxxxxxxxxxxxxxxxxxxx') {
+        errors.push('RAZORPAY_KEY_SECRET is not configured properly');
+    }
+
+    // Check Email (Warning only)
+    if (!process.env.EMAIL_USER) warnings.push('EMAIL_USER is not set - Email notifications disabled');
+    if (!process.env.EMAIL_PASS) warnings.push('EMAIL_PASS is not set - Email notifications disabled');
+
+    // Check Environment
+    if (process.env.NODE_ENV !== 'production' && process.env.NODE_ENV !== 'development') {
+        warnings.push('NODE_ENV is not set - Defaulting to development');
+    }
+
+    return { errors, warnings };
+}
+
+// ====== VALIDATE RAZORPAY CONFIGURATION ======
+function validateRazorpayConfig() {
+    const keyId = process.env.RAZORPAY_KEY_ID;
+    const keySecret = process.env.RAZORPAY_KEY_SECRET;
+
+    // Check if keys exist and are not placeholder values
+    if (!keyId || keyId === 'rzp_test_xxxxxxxxxx' || keyId.length < 10) {
+        return { valid: false, error: 'Invalid Razorpay Key ID. Please set a valid key in .env' };
+    }
+
+    if (!keySecret || keySecret === 'xxxxxxxxxxxxxxxxxxxx' || keySecret.length < 10) {
+        return { valid: false, error: 'Invalid Razorpay Key Secret. Please set a valid secret in .env' };
+    }
+
+    return { valid: true };
+}
+
+// ====== INITIALIZE RAZORPAY (with error handling) ======
+let razorpay = null;
+let razorpayInitialized = false;
+
+function initializeRazorpay() {
+    try {
+        const validation = validateRazorpayConfig();
+        if (!validation.valid) {
+            console.error('❌ Razorpay initialization failed:', validation.error);
+            razorpayInitialized = false;
+            return false;
+        }
+
+        razorpay = new Razorpay({
+            key_id: process.env.RAZORPAY_KEY_ID,
+            key_secret: process.env.RAZORPAY_KEY_SECRET
+        });
+        
+        razorpayInitialized = true;
+        console.log('✅ Razorpay initialized successfully');
+        return true;
+    } catch (error) {
+        console.error('❌ Razorpay initialization error:', error.message);
+        razorpayInitialized = false;
+        return false;
+    }
+}
+
+// ====== INITIALIZE EMAIL (with error handling) ======
+let emailTransporter = null;
+let emailInitialized = false;
+
+function initializeEmail() {
+    try {
+        if (!process.env.EMAIL_USER || !process.env.EMAIL_PASS) {
+            console.warn('⚠️ Email credentials not configured - Email notifications disabled');
+            emailInitialized = false;
+            return false;
+        }
+
+        emailTransporter = nodemailer.createTransport({
+            service: 'gmail',
+            auth: {
+                user: process.env.EMAIL_USER,
+                pass: process.env.EMAIL_PASS
+            }
+        });
+        
+        emailInitialized = true;
+        console.log('✅ Email service initialized');
+        return true;
+    } catch (error) {
+        console.error('❌ Email initialization error:', error.message);
+        emailInitialized = false;
+        return false;
+    }
+}
+
 // ====== DATABASE CONNECTION ======
 const pool = mysql.createPool({
-    host: process.env.DB_HOST || 'gateway01.ap-northeast-1.prod.aws.tidbcloud.com',
+    host: process.env.DB_HOST,
     port: process.env.DB_PORT || 4000,
-    user: process.env.DB_USER || '2bEem2Bk4wszYxL.ramrat_2isqLHvC',
-    password: process.env.DB_PASSWORD || 'your_password',
-    database: process.env.DB_NAME || 'jayam_travels',
+    user: process.env.DB_USER,
+    password: process.env.DB_PASSWORD,
+    database: process.env.DB_NAME,
     ssl: {
         minVersion: 'TLSv1.2',
         rejectUnauthorized: true
@@ -38,24 +145,11 @@ const pool = mysql.createPool({
     queueLimit: 0
 });
 
-// ====== RAZORPAY ======
-const razorpay = new Razorpay({
-    key_id: process.env.RAZORPAY_KEY_ID || 'rzp_test_xxxxxxxxxx',
-    key_secret: process.env.RAZORPAY_KEY_SECRET || 'xxxxxxxxxxxxxxxxxxxx'
-});
-
-// ====== EMAIL ======
-const transporter = nodemailer.createTransport({
-    service: 'gmail',
-    auth: {
-        user: process.env.EMAIL_USER || 'jayamtravels@gmail.com',
-        pass: process.env.EMAIL_PASS || 'your-app-password'
-    }
-});
-
 // ====== HELPER FUNCTIONS ======
 function generateBookingId() {
-    return 'JAY' + Date.now().toString(36).toUpperCase() + Math.random().toString(36).substring(2, 6).toUpperCase();
+    const timestamp = Date.now().toString(36).toUpperCase();
+    const random = Math.random().toString(36).substring(2, 6).toUpperCase();
+    return 'JAY' + timestamp + random;
 }
 
 function generatePNR() {
@@ -67,6 +161,76 @@ function generatePNR() {
     return pnr;
 }
 
+function formatDate(date) {
+    return new Date(date).toLocaleDateString('en-IN', {
+        day: 'numeric',
+        month: 'short',
+        year: 'numeric'
+    });
+}
+
+// ====== SEND CONFIRMATION EMAIL ======
+async function sendConfirmationEmail(bookingData) {
+    if (!emailInitialized) {
+        console.warn('⚠️ Email not initialized - Skipping email send');
+        return false;
+    }
+
+    try {
+        const seats = typeof bookingData.seats === 'string' ? JSON.parse(bookingData.seats) : bookingData.seats;
+        const passengers = typeof bookingData.passengers === 'string' ? JSON.parse(bookingData.passengers) : bookingData.passengers;
+        
+        let passengerList = '';
+        if (Array.isArray(passengers)) {
+            passengers.forEach((p, i) => {
+                const seat = Array.isArray(seats) ? seats[i] || 'N/A' : 'N/A';
+                passengerList += `${p.name} (${p.age} yrs, ${p.gender}) - Seat: ${seat}<br>`;
+            });
+        }
+
+        const mailOptions = {
+            from: process.env.EMAIL_USER,
+            to: bookingData.email,
+            subject: `Jayam Travels - Booking Confirmed (${bookingData.booking_id})`,
+            html: `
+                <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; background: #f8f9fa; border-radius: 10px;">
+                    <div style="text-align: center; background: linear-gradient(135deg, #e63946, #f77f00); padding: 20px; border-radius: 10px 10px 0 0; color: #fff;">
+                        <h1 style="margin: 0;">🚌 Jayam Travels</h1>
+                        <p style="margin: 5px 0 0;">Booking Confirmed!</p>
+                    </div>
+                    <div style="background: #fff; padding: 20px; border-radius: 0 0 10px 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1);">
+                        <h2 style="color: #e63946;">Booking Details</h2>
+                        <table style="width: 100%; border-collapse: collapse;">
+                            <tr><td style="padding: 8px 0;"><strong>Booking ID:</strong></td><td style="padding: 8px 0;">${bookingData.booking_id}</td></tr>
+                            <tr><td style="padding: 8px 0;"><strong>PNR:</strong></td><td style="padding: 8px 0;">${bookingData.pnr}</td></tr>
+                            <tr><td style="padding: 8px 0;"><strong>Bus:</strong></td><td style="padding: 8px 0;">Jayam Travels - AC Sleeper</td></tr>
+                            <tr><td style="padding: 8px 0;"><strong>Route:</strong></td><td style="padding: 8px 0;">${bookingData.from_city} → ${bookingData.to_city}</td></tr>
+                            <tr><td style="padding: 8px 0;"><strong>Date:</strong></td><td style="padding: 8px 0;">${formatDate(bookingData.travel_date)}</td></tr>
+                            <tr><td style="padding: 8px 0;"><strong>Boarding:</strong></td><td style="padding: 8px 0;">${bookingData.boarding}</td></tr>
+                            <tr><td style="padding: 8px 0;"><strong>Dropping:</strong></td><td style="padding: 8px 0;">${bookingData.dropping}</td></tr>
+                            <tr><td style="padding: 8px 0;"><strong>Seats:</strong></td><td style="padding: 8px 0;">${Array.isArray(seats) ? seats.join(', ') : seats}</td></tr>
+                            <tr><td style="padding: 8px 0;"><strong>Passengers:</strong></td><td style="padding: 8px 0;">${passengerList}</td></tr>
+                            <tr><td style="padding: 8px 0;"><strong>Total Amount:</strong></td><td style="padding: 8px 0; color: #e63946; font-weight: bold;">₹${bookingData.total_amount}</td></tr>
+                        </table>
+                        <hr style="border: 1px solid #eee; margin: 20px 0;">
+                        <p style="color: #666; font-size: 14px; text-align: center;">
+                            <strong>Thank you for choosing Jayam Travels!</strong><br>
+                            For queries, contact: support@jayamtravels.com | 📞 1800-XXX-XXXX
+                        </p>
+                    </div>
+                </div>
+            `
+        };
+
+        await emailTransporter.sendMail(mailOptions);
+        console.log(`✅ Confirmation email sent to ${bookingData.email}`);
+        return true;
+    } catch (error) {
+        console.error('❌ Email sending error:', error.message);
+        return false;
+    }
+}
+
 // ====== CHECK DATABASE AND TABLES ======
 async function checkDatabaseSetup() {
     let connection;
@@ -74,26 +238,16 @@ async function checkDatabaseSetup() {
         connection = await pool.getConnection();
         console.log('✅ Database connected successfully');
         
-        // Check current database
         const [dbResult] = await connection.query('SELECT DATABASE() as current_db');
         const currentDb = dbResult[0].current_db;
-        console.log('📊 Current database:', currentDb);
+        console.log(`📊 Current database: ${currentDb}`);
         
-        if (currentDb !== (process.env.DB_NAME || 'jayam_travels')) {
-            console.log('⚠️ WARNING: Connected to wrong database!');
-            console.log('   Expected:', process.env.DB_NAME || 'jayam_travels');
-            console.log('   Actual:', currentDb);
-            console.log('   Please update your .env file with correct DB_NAME');
-        }
-        
-        // Check if bookings table exists
         const [tables] = await connection.query(
             "SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = ? AND TABLE_NAME IN ('bookings', 'payments')",
             [currentDb]
         );
         
         const existingTables = tables.map(t => t.TABLE_NAME);
-        console.log('📊 Existing tables:', existingTables.length > 0 ? existingTables.join(', ') : 'None');
         
         if (existingTables.length < 2) {
             console.log('');
@@ -101,7 +255,7 @@ async function checkDatabaseSetup() {
             console.log('⚠️  TABLES NOT FOUND! Please create them manually:');
             console.log('⚠️ ════════════════════════════════════════════════════');
             console.log('');
-            console.log('USE ' + currentDb + ';');
+            console.log(`USE ${currentDb};`);
             console.log('');
             console.log('CREATE TABLE IF NOT EXISTS bookings (');
             console.log('    id INT AUTO_INCREMENT PRIMARY KEY,');
@@ -149,8 +303,6 @@ async function checkDatabaseSetup() {
             console.log(');');
             console.log('');
             console.log('⚠️ ════════════════════════════════════════════════════');
-            console.log('⚠️  After creating tables, restart the server');
-            console.log('⚠️ ════════════════════════════════════════════════════');
             console.log('');
             connection.release();
             return false;
@@ -167,82 +319,80 @@ async function checkDatabaseSetup() {
     }
 }
 
-// ====== SEND CONFIRMATION EMAIL ======
-async function sendConfirmationEmail(bookingData) {
-    try {
-        const seats = typeof bookingData.seats === 'string' ? JSON.parse(bookingData.seats) : bookingData.seats;
-        const passengers = typeof bookingData.passengers === 'string' ? JSON.parse(bookingData.passengers) : bookingData.passengers;
-        
-        let passengerList = '';
-        if (Array.isArray(passengers)) {
-            passengers.forEach(function(p, i) {
-                const seat = Array.isArray(seats) ? seats[i] || 'N/A' : 'N/A';
-                passengerList += p.name + ' (' + p.age + ' yrs, ' + p.gender + ') - Seat: ' + seat + '<br>';
-            });
-        }
-
-        const mailOptions = {
-            from: process.env.EMAIL_USER || 'jayamtravels@gmail.com',
-            to: bookingData.email,
-            subject: 'Jayam Travels - Booking Confirmed (' + bookingData.booking_id + ')',
-            html: `
-                <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; background: #f8f9fa; border-radius: 10px;">
-                    <div style="text-align: center; background: linear-gradient(135deg, #e63946, #f77f00); padding: 20px; border-radius: 10px 10px 0 0; color: #fff;">
-                        <h1 style="margin: 0;">🚌 Jayam Travels</h1>
-                        <p style="margin: 5px 0 0;">Booking Confirmed!</p>
-                    </div>
-                    <div style="background: #fff; padding: 20px; border-radius: 0 0 10px 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1);">
-                        <h2 style="color: #e63946;">Booking Details</h2>
-                        <table style="width: 100%; border-collapse: collapse;">
-                            <tr><td style="padding: 8px 0;"><strong>Booking ID:</strong></td><td style="padding: 8px 0;">${bookingData.booking_id}</td></tr>
-                            <tr><td style="padding: 8px 0;"><strong>PNR:</strong></td><td style="padding: 8px 0;">${bookingData.pnr}</td></tr>
-                            <tr><td style="padding: 8px 0;"><strong>Bus:</strong></td><td style="padding: 8px 0;">Jayam Travels - AC Sleeper</td></tr>
-                            <tr><td style="padding: 8px 0;"><strong>Route:</strong></td><td style="padding: 8px 0;">${bookingData.from_city} → ${bookingData.to_city}</td></tr>
-                            <tr><td style="padding: 8px 0;"><strong>Date:</strong></td><td style="padding: 8px 0;">${new Date(bookingData.travel_date).toLocaleDateString('en-IN', {day:'numeric', month:'short', year:'numeric'})}</td></tr>
-                            <tr><td style="padding: 8px 0;"><strong>Boarding:</strong></td><td style="padding: 8px 0;">${bookingData.boarding}</td></tr>
-                            <tr><td style="padding: 8px 0;"><strong>Dropping:</strong></td><td style="padding: 8px 0;">${bookingData.dropping}</td></tr>
-                            <tr><td style="padding: 8px 0;"><strong>Seats:</strong></td><td style="padding: 8px 0;">${Array.isArray(seats) ? seats.join(', ') : seats}</td></tr>
-                            <tr><td style="padding: 8px 0;"><strong>Passengers:</strong></td><td style="padding: 8px 0;">${passengerList}</td></tr>
-                            <tr><td style="padding: 8px 0;"><strong>Total Amount:</strong></td><td style="padding: 8px 0; color: #e63946; font-weight: bold;">₹${bookingData.total_amount}</td></tr>
-                        </table>
-                        <hr style="border: 1px solid #eee; margin: 20px 0;">
-                        <p style="color: #666; font-size: 14px; text-align: center;">
-                            <strong>Thank you for choosing Jayam Travels!</strong><br>
-                            For queries, contact: support@jayamtravels.com | 📞 1800-XXX-XXXX
-                        </p>
-                    </div>
-                </div>
-            `
-        };
-
-        await transporter.sendMail(mailOptions);
-        console.log('✅ Confirmation email sent to ' + bookingData.email);
-        return true;
-    } catch (error) {
-        console.error('❌ Email sending error:', error.message);
-        return false;
-    }
-}
-
-// ====== API ROUTES ======
-
-app.get('/', function(req, res) {
+// ====== ROOT ROUTE ======
+app.get('/', (req, res) => {
+    const envValidation = validateEnvironment();
+    
     res.json({
         status: 'success',
         message: 'Jayam Travels API is running',
-        timestamp: new Date().toISOString()
+        version: '1.0.0',
+        timestamp: new Date().toISOString(),
+        environment: {
+            node_env: process.env.NODE_ENV || 'development',
+            razorpay: razorpayInitialized ? '✅ Configured' : '❌ Not Configured',
+            email: emailInitialized ? '✅ Configured' : '❌ Not Configured',
+            database: process.env.DB_NAME || 'Not Set'
+        },
+        endpoints: {
+            health: 'GET /api/health',
+            testDB: 'GET /api/test-db',
+            bookings: 'POST /api/bookings',
+            getBooking: 'GET /api/bookings/:booking_id',
+            getBookingsByEmail: 'GET /api/bookings/email/:email',
+            createOrder: 'POST /api/create-order',
+            verifyPayment: 'POST /api/verify-payment',
+            cancelBooking: 'POST /api/bookings/:booking_id/cancel',
+            status: 'GET /api/status'
+        }
     });
 });
 
-app.get('/api/health', function(req, res) {
-    res.json({ 
-        status: 'ok', 
+// ====== API STATUS (Check all services) ======
+app.get('/api/status', (req, res) => {
+    const envValidation = validateEnvironment();
+    
+    res.json({
+        success: true,
+        timestamp: new Date().toISOString(),
+        services: {
+            database: {
+                status: 'connected',
+                name: process.env.DB_NAME || 'Not Set'
+            },
+            razorpay: {
+                status: razorpayInitialized ? 'configured' : 'not_configured',
+                message: razorpayInitialized ? 'Razorpay is ready' : 'Razorpay keys not configured'
+            },
+            email: {
+                status: emailInitialized ? 'configured' : 'not_configured',
+                message: emailInitialized ? 'Email service is ready' : 'Email credentials not configured'
+            }
+        },
+        environment: {
+            node_env: process.env.NODE_ENV || 'development',
+            port: PORT
+        },
+        warnings: envValidation.warnings,
+        errors: envValidation.errors
+    });
+});
+
+// ====== HEALTH CHECK ======
+app.get('/api/health', (req, res) => {
+    res.json({
+        status: 'ok',
         message: 'Jayam Travels API is running',
-        timestamp: new Date().toISOString()
+        timestamp: new Date().toISOString(),
+        services: {
+            razorpay: razorpayInitialized ? 'ready' : 'not_configured',
+            email: emailInitialized ? 'ready' : 'not_configured'
+        }
     });
 });
 
-app.get('/api/test-db', async function(req, res) {
+// ====== TEST DATABASE ======
+app.get('/api/test-db', async (req, res) => {
     let connection;
     try {
         connection = await pool.getConnection();
@@ -261,7 +411,7 @@ app.get('/api/test-db', async function(req, res) {
             success: true,
             message: 'Database connected successfully',
             current_database: currentDb,
-            tables: tables.map(function(t) { return t.TABLE_NAME; }),
+            tables: tables.map(t => t.TABLE_NAME),
             database_config: process.env.DB_NAME
         });
     } catch (error) {
@@ -274,15 +424,13 @@ app.get('/api/test-db', async function(req, res) {
     }
 });
 
-// ====== 1. CREATE BOOKING (With Detailed Error Handling) ======
-app.post('/api/bookings', async function(req, res) {
+// ====== 1. CREATE BOOKING ======
+app.post('/api/bookings', async (req, res) => {
     let connection;
     try {
         console.log('========================================');
         console.log('📝 CREATE BOOKING REQUEST');
         console.log('========================================');
-        console.log('Request body:', JSON.stringify(req.body, null, 2));
-        console.log('----------------------------------------');
         
         const {
             from, to, date, seats, passengers, boarding, dropping,
@@ -290,14 +438,12 @@ app.post('/api/bookings', async function(req, res) {
         } = req.body;
 
         // ====== VALIDATION ======
-        console.log('🔍 Validating request...');
-        
         const requiredFields = ['from', 'to', 'date', 'seats', 'passengers', 'boarding', 'dropping', 'email', 'mobile', 'state'];
-        const missingFields = requiredFields.filter(function(field) { return !req.body[field]; });
+        const missingFields = requiredFields.filter(field => !req.body[field]);
         
         if (missingFields.length > 0) {
-            console.log('❌ Missing fields:', missingFields);
             return res.status(400).json({ 
+                success: false,
                 error: 'Missing required fields',
                 missing: missingFields
             });
@@ -306,72 +452,67 @@ app.post('/api/bookings', async function(req, res) {
         // Validate email
         const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
         if (!emailRegex.test(email)) {
-            console.log('❌ Invalid email:', email);
-            return res.status(400).json({ error: 'Invalid email address' });
+            return res.status(400).json({ 
+                success: false,
+                error: 'Invalid email address' 
+            });
         }
 
         // Validate mobile
         const mobileRegex = /^[6-9]\d{9}$/;
         if (!mobileRegex.test(mobile)) {
-            console.log('❌ Invalid mobile:', mobile);
-            return res.status(400).json({ error: 'Invalid mobile number' });
+            return res.status(400).json({ 
+                success: false,
+                error: 'Invalid mobile number' 
+            });
         }
 
-        // Validate seats array
+        // Validate seats
         if (!Array.isArray(seats) || seats.length === 0) {
-            console.log('❌ Invalid seats:', seats);
-            return res.status(400).json({ error: 'Seats must be a non-empty array' });
+            return res.status(400).json({ 
+                success: false,
+                error: 'Seats must be a non-empty array' 
+            });
         }
 
-        // Validate passengers array
+        // Validate passengers
         if (!Array.isArray(passengers) || passengers.length === 0) {
-            console.log('❌ Invalid passengers:', passengers);
-            return res.status(400).json({ error: 'Passengers must be a non-empty array' });
+            return res.status(400).json({ 
+                success: false,
+                error: 'Passengers must be a non-empty array' 
+            });
+        }
+
+        // Check if passengers match seats
+        if (seats.length !== passengers.length) {
+            return res.status(400).json({ 
+                success: false,
+                error: 'Number of seats and passengers must match' 
+            });
+        }
+
+        // ====== CHECK RAZORPAY CONFIGURATION ======
+        if (!razorpayInitialized) {
+            return res.status(503).json({
+                success: false,
+                error: 'Payment service is not configured',
+                message: 'Razorpay keys are not properly configured. Please contact support.',
+                details: 'Payment gateway is required for booking'
+            });
         }
 
         // Generate IDs
         const booking_id = generateBookingId();
         const pnr = generatePNR();
-        
-        console.log('📝 Generated IDs:');
-        console.log('   Booking ID:', booking_id);
-        console.log('   PNR:', pnr);
-        console.log('----------------------------------------');
 
-        // ====== DATABASE OPERATION ======
-        console.log('🔗 Connecting to database...');
+        // Database operation
         connection = await pool.getConnection();
-        console.log('✅ Connected');
-
-        console.log('🔄 Starting transaction...');
         await connection.beginTransaction();
-        console.log('✅ Transaction started');
 
-        // Prepare data
         const seatsJson = JSON.stringify(seats);
         const passengersJson = JSON.stringify(passengers);
         const insuranceValue = insurance ? 1 : 0;
-        
-        console.log('📊 Data to insert:');
-        console.log('   from:', from);
-        console.log('   to:', to);
-        console.log('   date:', date);
-        console.log('   seats:', seatsJson);
-        console.log('   passengers:', passengersJson);
-        console.log('   boarding:', boarding);
-        console.log('   dropping:', dropping);
-        console.log('   email:', email);
-        console.log('   mobile:', mobile);
-        console.log('   state:', state);
-        console.log('   insurance:', insuranceValue);
-        console.log('   base_fare:', base_fare);
-        console.log('   cgst:', cgst);
-        console.log('   sgst:', sgst);
-        console.log('   service_fee:', service_fee);
-        console.log('   total_amount:', total_amount);
-        console.log('----------------------------------------');
 
-        // Insert booking
         const query = `
             INSERT INTO bookings (
                 booking_id, pnr, from_city, to_city, travel_date,
@@ -390,92 +531,71 @@ app.post('/api/bookings', async function(req, res) {
             'pending', 'confirmed'
         ];
 
-        console.log('📝 Executing INSERT query...');
-        const [result] = await connection.query(query, values);
-        console.log('✅ Query executed successfully');
-        console.log('   Insert result:', result);
-
-        // Commit transaction
-        console.log('🔄 Committing transaction...');
+        await connection.query(query, values);
         await connection.commit();
-        console.log('✅ Transaction committed successfully');
 
-        // Send email in background
-        const bookingData = {
-            booking_id: booking_id,
-            pnr: pnr,
-            from_city: from,
-            to_city: to,
-            travel_date: date,
-            seats: seatsJson,
-            passengers: passengersJson,
-            boarding: boarding,
-            dropping: dropping,
-            email: email,
-            mobile: mobile,
-            state: state,
-            total_amount: total_amount
-        };
-        
-        sendConfirmationEmail(bookingData).catch(function(err) {
-            console.error('❌ Email error:', err.message);
-        });
+        // Send email in background (only if email is configured)
+        if (emailInitialized) {
+            const bookingData = {
+                booking_id, pnr, from_city: from, to_city: to,
+                travel_date: date, seats: seatsJson, passengers: passengersJson,
+                boarding, dropping, email, mobile, state,
+                total_amount
+            };
+            sendConfirmationEmail(bookingData).catch(err => {
+                console.error('❌ Email error:', err.message);
+            });
+        }
 
-        console.log('========================================');
-        console.log('✅ Booking created successfully!');
-        console.log('   Booking ID:', booking_id);
-        console.log('   PNR:', pnr);
-        console.log('========================================');
-
+        console.log('✅ Booking created successfully:', booking_id);
         res.status(201).json({
             success: true,
             booking_id: booking_id,
             pnr: pnr,
-            message: 'Booking created successfully'
+            message: 'Booking created successfully',
+            payment_required: true,
+            razorpay_ready: razorpayInitialized
         });
 
     } catch (error) {
-        console.log('========================================');
-        console.log('❌ ===== BOOKING ERROR =====');
-        console.log('========================================');
-        console.log('Error message:', error.message);
-        console.log('Error code:', error.code);
-        console.log('SQL State:', error.sqlState);
-        console.log('SQL Message:', error.sqlMessage);
-        console.log('----------------------------------------');
-        
+        console.error('❌ Booking error:', error.message);
         if (connection) {
             try {
-                console.log('🔄 Rolling back transaction...');
                 await connection.rollback();
-                console.log('✅ Transaction rolled back');
+                console.log('🔄 Transaction rolled back');
             } catch (rollbackError) {
                 console.error('❌ Rollback error:', rollbackError.message);
             }
             connection.release();
-            console.log('🔌 Connection released');
         }
-        
-        console.log('========================================');
-        
         res.status(500).json({ 
+            success: false,
             error: 'Failed to create booking',
-            details: error.message,
-            code: error.code,
-            sqlMessage: error.sqlMessage,
-            hint: 'Check if tables exist and database name is correct'
+            details: error.message
         });
     }
 });
 
 // ====== 2. CREATE RAZORPAY ORDER ======
-app.post('/api/create-order', async function(req, res) {
+app.post('/api/create-order', async (req, res) => {
     let connection;
     try {
+        // ====== CHECK RAZORPAY CONFIGURATION ======
+        if (!razorpayInitialized) {
+            return res.status(503).json({
+                success: false,
+                error: 'Payment service is not configured',
+                message: 'Razorpay keys are not properly configured'
+            });
+        }
+
         const { booking_id, amount } = req.body;
 
         if (!booking_id || !amount) {
-            return res.status(400).json({ error: 'Booking ID and amount are required' });
+            return res.status(400).json({ 
+                success: false,
+                error: 'Booking ID and amount are required' 
+            });
         }
 
         connection = await pool.getConnection();
@@ -486,15 +606,22 @@ app.post('/api/create-order', async function(req, res) {
         
         if (bookings.length === 0) {
             connection.release();
-            return res.status(404).json({ error: 'Booking not found' });
+            return res.status(404).json({ 
+                success: false,
+                error: 'Booking not found' 
+            });
         }
 
         const booking = bookings[0];
         if (parseFloat(booking.total_amount) !== parseFloat(amount)) {
             connection.release();
-            return res.status(400).json({ error: 'Amount mismatch' });
+            return res.status(400).json({ 
+                success: false,
+                error: 'Amount mismatch' 
+            });
         }
 
+        // Create Razorpay order
         const options = {
             amount: Math.round(amount * 100),
             currency: 'INR',
@@ -525,6 +652,7 @@ app.post('/api/create-order', async function(req, res) {
         console.error('❌ Order creation error:', error.message);
         if (connection) connection.release();
         res.status(500).json({ 
+            success: false,
             error: 'Failed to create payment order', 
             details: error.message 
         });
@@ -532,9 +660,17 @@ app.post('/api/create-order', async function(req, res) {
 });
 
 // ====== 3. VERIFY PAYMENT ======
-app.post('/api/verify-payment', async function(req, res) {
+app.post('/api/verify-payment', async (req, res) => {
     let connection;
     try {
+        // ====== CHECK RAZORPAY CONFIGURATION ======
+        if (!razorpayInitialized) {
+            return res.status(503).json({
+                success: false,
+                error: 'Payment service is not configured'
+            });
+        }
+
         const {
             razorpay_order_id,
             razorpay_payment_id,
@@ -543,9 +679,13 @@ app.post('/api/verify-payment', async function(req, res) {
         } = req.body;
 
         if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature || !booking_id) {
-            return res.status(400).json({ error: 'Missing payment verification parameters' });
+            return res.status(400).json({ 
+                success: false,
+                error: 'Missing payment verification parameters' 
+            });
         }
 
+        // Verify signature
         const sign = razorpay_order_id + '|' + razorpay_payment_id;
         const expectedSign = crypto
             .createHmac('sha256', process.env.RAZORPAY_KEY_SECRET)
@@ -555,14 +695,19 @@ app.post('/api/verify-payment', async function(req, res) {
         const isAuthentic = expectedSign === razorpay_signature;
 
         if (!isAuthentic) {
-            return res.status(400).json({ error: 'Payment verification failed' });
+            return res.status(400).json({ 
+                success: false,
+                error: 'Payment verification failed - Invalid signature' 
+            });
         }
 
         connection = await pool.getConnection();
         await connection.beginTransaction();
 
         await connection.query(
-            'UPDATE payments SET razorpay_payment_id = ?, razorpay_signature = ?, status = "paid", updated_at = CURRENT_TIMESTAMP WHERE razorpay_order_id = ? AND booking_id = ?',
+            `UPDATE payments 
+             SET razorpay_payment_id = ?, razorpay_signature = ?, status = 'paid', updated_at = CURRENT_TIMESTAMP 
+             WHERE razorpay_order_id = ? AND booking_id = ?`,
             [razorpay_payment_id, razorpay_signature, razorpay_order_id, booking_id]
         );
 
@@ -580,8 +725,9 @@ app.post('/api/verify-payment', async function(req, res) {
         
         connection.release();
 
-        if (bookings.length > 0) {
-            sendConfirmationEmail(bookings[0]).catch(function(err) {
+        // Send confirmation email
+        if (bookings.length > 0 && emailInitialized) {
+            sendConfirmationEmail(bookings[0]).catch(err => {
                 console.error('❌ Email error:', err.message);
             });
         }
@@ -603,6 +749,7 @@ app.post('/api/verify-payment', async function(req, res) {
             connection.release();
         }
         res.status(500).json({ 
+            success: false,
             error: 'Failed to verify payment', 
             details: error.message 
         });
@@ -610,7 +757,7 @@ app.post('/api/verify-payment', async function(req, res) {
 });
 
 // ====== 4. GET BOOKING DETAILS ======
-app.get('/api/bookings/:booking_id', async function(req, res) {
+app.get('/api/bookings/:booking_id', async (req, res) => {
     let connection;
     try {
         const { booking_id } = req.params;
@@ -623,7 +770,10 @@ app.get('/api/bookings/:booking_id', async function(req, res) {
         connection.release();
 
         if (bookings.length === 0) {
-            return res.status(404).json({ error: 'Booking not found' });
+            return res.status(404).json({ 
+                success: false,
+                error: 'Booking not found' 
+            });
         }
 
         const booking = bookings[0];
@@ -635,19 +785,24 @@ app.get('/api/bookings/:booking_id', async function(req, res) {
     } catch (error) {
         console.error('❌ Get booking error:', error.message);
         if (connection) connection.release();
-        res.status(500).json({ error: 'Failed to fetch booking details' });
+        res.status(500).json({ 
+            success: false,
+            error: 'Failed to fetch booking details' 
+        });
     }
 });
 
 // ====== 5. GET BOOKINGS BY EMAIL ======
-app.get('/api/bookings/email/:email', async function(req, res) {
+app.get('/api/bookings/email/:email', async (req, res) => {
     let connection;
     try {
         const { email } = req.params;
 
         connection = await pool.getConnection();
         const [bookings] = await connection.query(
-            'SELECT booking_id, pnr, from_city, to_city, travel_date, total_amount, payment_status, booking_status, created_at FROM bookings WHERE email = ? ORDER BY created_at DESC',
+            `SELECT booking_id, pnr, from_city, to_city, travel_date, 
+                    total_amount, payment_status, booking_status, created_at 
+             FROM bookings WHERE email = ? ORDER BY created_at DESC`,
             [email]
         );
         connection.release();
@@ -657,12 +812,15 @@ app.get('/api/bookings/email/:email', async function(req, res) {
     } catch (error) {
         console.error('❌ Get bookings by email error:', error.message);
         if (connection) connection.release();
-        res.status(500).json({ error: 'Failed to fetch bookings' });
+        res.status(500).json({ 
+            success: false,
+            error: 'Failed to fetch bookings' 
+        });
     }
 });
 
 // ====== 6. CANCEL BOOKING ======
-app.post('/api/bookings/:booking_id/cancel', async function(req, res) {
+app.post('/api/bookings/:booking_id/cancel', async (req, res) => {
     let connection;
     try {
         const { booking_id } = req.params;
@@ -678,13 +836,19 @@ app.post('/api/bookings/:booking_id/cancel', async function(req, res) {
         if (bookings.length === 0) {
             await connection.rollback();
             connection.release();
-            return res.status(404).json({ error: 'Booking not found' });
+            return res.status(404).json({ 
+                success: false,
+                error: 'Booking not found' 
+            });
         }
 
         if (bookings[0].booking_status === 'cancelled') {
             await connection.rollback();
             connection.release();
-            return res.status(400).json({ error: 'Booking already cancelled' });
+            return res.status(400).json({ 
+                success: false,
+                error: 'Booking already cancelled' 
+            });
         }
 
         await connection.query(
@@ -695,7 +859,10 @@ app.post('/api/bookings/:booking_id/cancel', async function(req, res) {
         await connection.commit();
         connection.release();
 
-        res.json({ success: true, message: 'Booking cancelled successfully' });
+        res.json({ 
+            success: true, 
+            message: 'Booking cancelled successfully' 
+        });
 
     } catch (error) {
         console.error('❌ Cancel booking error:', error.message);
@@ -707,13 +874,17 @@ app.post('/api/bookings/:booking_id/cancel', async function(req, res) {
             }
             connection.release();
         }
-        res.status(500).json({ error: 'Failed to cancel booking' });
+        res.status(500).json({ 
+            success: false,
+            error: 'Failed to cancel booking' 
+        });
     }
 });
 
 // ====== 404 HANDLER ======
-app.use(function(req, res) {
+app.use((req, res) => {
     res.status(404).json({
+        success: false,
         error: 'Route not found',
         path: req.url,
         method: req.method
@@ -721,41 +892,66 @@ app.use(function(req, res) {
 });
 
 // ====== ERROR HANDLER ======
-app.use(function(err, req, res, next) {
+app.use((err, req, res, next) => {
     console.error('❌ Unhandled error:', err.message);
     res.status(500).json({
+        success: false,
         error: 'Internal server error',
         message: err.message
     });
 });
 
 // ====== START SERVER ======
-app.listen(PORT, function() {
-    console.log('================================================');
-    console.log('  🚌 Jayam Travels - Backend Server');
-    console.log('================================================');
-    console.log('  Server running on port: ' + PORT);
-    console.log('  Environment: ' + (process.env.NODE_ENV || 'development'));
-    console.log('================================================');
+app.listen(PORT, async () => {
+    console.log('╔═══════════════════════════════════════════════════╗');
+    console.log('║   🚌 Jayam Travels - Professional Backend       ║');
+    console.log('╠═══════════════════════════════════════════════════╣');
+    console.log(`║   Server running on port: ${PORT}                ║`);
+    console.log(`║   Environment: ${process.env.NODE_ENV || 'development'}                 ║`);
+    console.log('╠═══════════════════════════════════════════════════╣');
     
-    checkDatabaseSetup().then(function(success) {
-        console.log('================================================');
-        console.log('  Database Status: ' + (success ? '✅ Ready' : '❌ Check tables'));
-        console.log('  Database Name: ' + (process.env.DB_NAME || 'jayam_travels'));
-        console.log('  Razorpay: ' + (process.env.RAZORPAY_KEY_ID ? '✅ Configured' : '❌ Not configured'));
-        console.log('  Email: ' + (process.env.EMAIL_USER ? '✅ Configured' : '❌ Not configured'));
-        console.log('================================================');
-        console.log('  Ready to accept requests!');
-        console.log('================================================');
-    });
+    // Validate environment
+    const envValidation = validateEnvironment();
+    if (envValidation.errors.length > 0) {
+        console.log('║   ❌ CRITICAL ERRORS:                         ║');
+        envValidation.errors.forEach(err => {
+            console.log(`║      - ${err}                               ║`);
+        });
+    }
+    if (envValidation.warnings.length > 0) {
+        console.log('║   ⚠️  Warnings:                               ║');
+        envValidation.warnings.forEach(warn => {
+            console.log(`║      - ${warn}                               ║`);
+        });
+    }
+    
+    console.log('╠═══════════════════════════════════════════════════╣');
+    
+    // Initialize Razorpay
+    const razorpayOk = initializeRazorpay();
+    console.log(`║   Razorpay: ${razorpayOk ? '✅ Configured' : '❌ NOT CONFIGURED'}`);
+    
+    // Initialize Email
+    const emailOk = initializeEmail();
+    console.log(`║   Email: ${emailOk ? '✅ Configured' : '⚠️  Disabled'}`);
+    
+    console.log('╠═══════════════════════════════════════════════════╣');
+    
+    // Check database
+    const dbOk = await checkDatabaseSetup();
+    console.log(`║   Database: ${dbOk ? '✅ Connected' : '❌ Check tables'}`);
+    
+    console.log('╠═══════════════════════════════════════════════════╣');
+    console.log(`║   Status URL: http://localhost:${PORT}/api/status ║`);
+    console.log('╚═══════════════════════════════════════════════════╝');
 });
 
 // ====== UNHANDLED REJECTIONS ======
-process.on('unhandledRejection', function(error) {
+process.on('unhandledRejection', (error) => {
     console.error('❌ Unhandled Rejection:', error.message);
 });
 
-process.on('uncaughtException', function(error) {
+process.on('uncaughtException', (error) => {
     console.error('❌ Uncaught Exception:', error.message);
 });
 
