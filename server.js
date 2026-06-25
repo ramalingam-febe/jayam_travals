@@ -1,4 +1,6 @@
-// server.js - Jayam Travels Booking Backend (FIXED CORS)
+// server.js - Jayam Travels Booking Backend
+// Deploy on Render with TiDB MySQL
+
 const express = require('express');
 const mysql = require('mysql2/promise');
 const cors = require('cors');
@@ -11,16 +13,27 @@ dotenv.config();
 
 const app = express();
 
-// ====== CORS CONFIGURATION (FIXED) ======
+// ====== CORS CONFIGURATION FOR NETLIFY ======
+const allowedOrigins = [
+       'https://yogajayam.netlify.app',
+    'https://*.onrender.com'
+];
+
 app.use(cors({
-    origin: '*', // Allow all origins for testing
+    origin: function(origin, callback) {
+        // Allow requests with no origin (like mobile apps, curl)
+        if (!origin) return callback(null, true);
+        if (allowedOrigins.indexOf(origin) !== -1 || process.env.NODE_ENV === 'development') {
+            callback(null, true);
+        } else {
+            console.log('Blocked CORS request from:', origin);
+            callback(null, true); // Allow all in production (remove this in production)
+        }
+    },
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept']
 }));
-
-// Add OPTIONS preflight handling
-app.options('*', cors());
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
@@ -34,30 +47,20 @@ app.get('/', (req, res) => {
         message: 'Jayam Travels API is running',
         version: '1.0.0',
         timestamp: new Date().toISOString(),
+        environment: process.env.NODE_ENV || 'development',
         services: {
             razorpay: process.env.RAZORPAY_KEY_ID ? '✅ Configured' : '❌ Not Configured',
             email: process.env.EMAIL_USER ? '✅ Configured' : '❌ Not Configured',
             database: process.env.DB_NAME || 'Not Set'
-        },
-        endpoints: {
-            health: 'GET /api/health',
-            testDB: 'GET /api/test-db',
-            status: 'GET /api/status',
-            bookings: 'POST /api/bookings',
-            getBooking: 'GET /api/bookings/:booking_id',
-            getBookingsByEmail: 'GET /api/bookings/email/:email',
-            createOrder: 'POST /api/create-order',
-            verifyPayment: 'POST /api/verify-payment',
-            cancelBooking: 'POST /api/bookings/:booking_id/cancel'
         }
     });
 });
 
-// ====== DATABASE CONNECTION ======
+// ====== DATABASE CONNECTION (TiDB) ======
 const pool = mysql.createPool({
     host: process.env.DB_HOST || 'gateway01.ap-northeast-1.prod.aws.tidbcloud.com',
     port: process.env.DB_PORT || 4000,
-    user: process.env.DB_USER || '2bEem2Bk4wszYxL.ramrat_2isqLHvC',
+    user: process.env.DB_USER || 'your_user',
     password: process.env.DB_PASSWORD || 'your_password',
     database: process.env.DB_NAME || 'jayam_travels',
     ssl: {
@@ -195,8 +198,7 @@ async function sendConfirmationEmail(bookingData) {
                         <p style="color: #666; font-size: 14px;">Thank you for choosing Jayam Travels!</p>
                     </div>
                 </div>
-            `,
-            text: `Jayam Travels - Booking Confirmed\n\nBooking ID: ${bookingData.booking_id}\nPNR: ${bookingData.pnr}\nRoute: ${bookingData.from_city} → ${bookingData.to_city}\nTotal: ₹${bookingData.total_amount}`
+            `
         };
 
         await emailTransporter.sendMail(mailOptions);
@@ -225,6 +227,7 @@ async function checkDatabaseSetup() {
         
         if (tables.length < 2) {
             console.log('⚠️ Tables not found. Please create them manually.');
+            console.log('📝 Run the CREATE TABLE statements from the documentation.');
             connection.release();
             return false;
         }
@@ -259,7 +262,8 @@ app.get('/api/status', (req, res) => {
             razorpay: razorpayInitialized ? 'configured' : 'not_configured',
             email: emailInitialized ? 'configured' : 'not_configured',
             database: process.env.DB_NAME || 'Not Set'
-        }
+        },
+        environment: process.env.NODE_ENV || 'development'
     });
 });
 
@@ -289,8 +293,7 @@ app.post('/api/bookings', async (req, res) => {
     let connection;
     try {
         console.log('📝 Creating booking...');
-        console.log('Request body:', JSON.stringify(req.body, null, 2));
-
+        
         const {
             from, to, date, seats, passengers, boarding, dropping,
             email, mobile, state, insurance, base_fare, cgst, sgst, service_fee, total_amount
@@ -372,7 +375,7 @@ app.post('/api/bookings', async (req, res) => {
                     total_amount, base_fare, cgst, sgst, service_fee
                 };
                 await sendConfirmationEmail(bookingData);
-            }, 120000); // 2 minutes
+            }, 120000);
         }
 
         res.status(201).json({
@@ -702,60 +705,6 @@ app.post('/api/bookings/:booking_id/cancel', async (req, res) => {
     }
 });
 
-// ====== TEST EMAIL ======
-app.post('/api/test-email', async (req, res) => {
-    try {
-        const { email } = req.body;
-
-        if (!email) {
-            return res.status(400).json({
-                success: false,
-                error: 'Email is required'
-            });
-        }
-
-        if (!emailInitialized) {
-            return res.status(503).json({
-                success: false,
-                error: 'Email service not configured'
-            });
-        }
-
-        const testData = {
-            booking_id: 'TEST12345',
-            pnr: 'TESTPNR123',
-            from_city: 'Chennai',
-            to_city: 'Bangalore',
-            travel_date: new Date().toISOString(),
-            boarding: 'Koyambedu Bus Stand',
-            dropping: 'Majestic Bus Stand',
-            email: email,
-            total_amount: 899,
-            base_fare: 899,
-            cgst: 22,
-            sgst: 22,
-            service_fee: 15,
-            seats: JSON.stringify(['LB1', 'LD2']),
-            passengers: JSON.stringify([
-                { name: 'Test User', age: 30, gender: 'Male' }
-            ])
-        };
-
-        const result = await sendConfirmationEmail(testData);
-        res.json({
-            success: result.success,
-            message: result.success ? 'Test email sent' : 'Failed to send email'
-        });
-
-    } catch (error) {
-        console.error('❌ Test email error:', error.message);
-        res.status(500).json({
-            success: false,
-            error: error.message
-        });
-    }
-});
-
 // ====== 404 HANDLER ======
 app.use((req, res) => {
     res.status(404).json({
@@ -770,8 +719,8 @@ app.listen(PORT, async () => {
     console.log('╔═══════════════════════════════════════════════════╗');
     console.log('║   🚌 Jayam Travels - Backend Server             ║');
     console.log('╠═══════════════════════════════════════════════════╣');
-    console.log(`║   Server running on: http://localhost:${PORT}    ║`);
-    console.log(`║   API Base URL: http://localhost:${PORT}/api     ║`);
+    console.log(`║   Server running on port: ${PORT}                ║`);
+    console.log(`║   Environment: ${process.env.NODE_ENV || 'development'}                 ║`);
     console.log('╠═══════════════════════════════════════════════════╣');
 
     initializeRazorpay();
