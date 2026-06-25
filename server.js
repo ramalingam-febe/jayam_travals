@@ -13,7 +13,7 @@ const app = express();
 
 // ====== CORS CONFIGURATION ======
 app.use(cors({
-    origin: ['http://localhost:5500', 'http://localhost:3000', 'https://yogajayam.netlify.app'],
+    origin: ['http://localhost:5500', 'http://localhost:3000', 'https://*.onrender.com'],
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
@@ -46,11 +46,6 @@ function validateEnvironment() {
     if (!process.env.EMAIL_USER) warnings.push('EMAIL_USER is not set - Email notifications disabled');
     if (!process.env.EMAIL_PASS) warnings.push('EMAIL_PASS is not set - Email notifications disabled');
 
-    // Check Environment
-    if (process.env.NODE_ENV !== 'production' && process.env.NODE_ENV !== 'development') {
-        warnings.push('NODE_ENV is not set - Defaulting to development');
-    }
-
     return { errors, warnings };
 }
 
@@ -59,7 +54,6 @@ function validateRazorpayConfig() {
     const keyId = process.env.RAZORPAY_KEY_ID;
     const keySecret = process.env.RAZORPAY_KEY_SECRET;
 
-    // Check if keys exist and are not placeholder values
     if (!keyId || keyId === 'rzp_test_xxxxxxxxxx' || keyId.length < 10) {
         return { valid: false, error: 'Invalid Razorpay Key ID. Please set a valid key in .env' };
     }
@@ -71,7 +65,7 @@ function validateRazorpayConfig() {
     return { valid: true };
 }
 
-// ====== INITIALIZE RAZORPAY (with error handling) ======
+// ====== INITIALIZE RAZORPAY ======
 let razorpay = null;
 let razorpayInitialized = false;
 
@@ -99,7 +93,7 @@ function initializeRazorpay() {
     }
 }
 
-// ====== INITIALIZE EMAIL (with error handling) ======
+// ====== INITIALIZE EMAIL ======
 let emailTransporter = null;
 let emailInitialized = false;
 
@@ -116,11 +110,23 @@ function initializeEmail() {
             auth: {
                 user: process.env.EMAIL_USER,
                 pass: process.env.EMAIL_PASS
+            },
+            connectionTimeout: 10000,
+            greetingTimeout: 10000,
+            socketTimeout: 10000
+        });
+
+        // Verify connection
+        emailTransporter.verify(function(error, success) {
+            if (error) {
+                console.error('❌ Email verification failed:', error.message);
+                emailInitialized = false;
+            } else {
+                console.log('✅ Email service ready to send emails');
+                emailInitialized = true;
             }
         });
-        
-        emailInitialized = true;
-        console.log('✅ Email service initialized');
+
         return true;
     } catch (error) {
         console.error('❌ Email initialization error:', error.message);
@@ -173,7 +179,7 @@ function formatDate(date) {
 async function sendConfirmationEmail(bookingData) {
     if (!emailInitialized) {
         console.warn('⚠️ Email not initialized - Skipping email send');
-        return false;
+        return { success: false, error: 'Email service not configured' };
     }
 
     try {
@@ -184,50 +190,198 @@ async function sendConfirmationEmail(bookingData) {
         if (Array.isArray(passengers)) {
             passengers.forEach((p, i) => {
                 const seat = Array.isArray(seats) ? seats[i] || 'N/A' : 'N/A';
-                passengerList += `${p.name} (${p.age} yrs, ${p.gender}) - Seat: ${seat}<br>`;
+                passengerList += `
+                    <tr>
+                        <td style="padding: 6px 8px; border-bottom: 1px solid #eee; font-size: 13px;">${i + 1}</td>
+                        <td style="padding: 6px 8px; border-bottom: 1px solid #eee; font-size: 13px;">${p.name}</td>
+                        <td style="padding: 6px 8px; border-bottom: 1px solid #eee; font-size: 13px;">${p.age} yrs</td>
+                        <td style="padding: 6px 8px; border-bottom: 1px solid #eee; font-size: 13px;">${p.gender}</td>
+                        <td style="padding: 6px 8px; border-bottom: 1px solid #eee; font-size: 13px; font-weight: bold; color: #e63946;">${seat}</td>
+                    </tr>
+                `;
             });
         }
 
         const mailOptions = {
-            from: process.env.EMAIL_USER,
+            from: `"Jayam Travels" <${process.env.EMAIL_USER}>`,
             to: bookingData.email,
-            subject: `Jayam Travels - Booking Confirmed (${bookingData.booking_id})`,
+            cc: process.env.EMAIL_USER,
+            subject: `🎫 Jayam Travels - Booking Confirmed (${bookingData.booking_id})`,
             html: `
-                <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; background: #f8f9fa; border-radius: 10px;">
-                    <div style="text-align: center; background: linear-gradient(135deg, #e63946, #f77f00); padding: 20px; border-radius: 10px 10px 0 0; color: #fff;">
-                        <h1 style="margin: 0;">🚌 Jayam Travels</h1>
-                        <p style="margin: 5px 0 0;">Booking Confirmed!</p>
+                <!DOCTYPE html>
+                <html>
+                <head>
+                    <meta charset="UTF-8">
+                    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                    <title>Booking Confirmation</title>
+                </head>
+                <body style="font-family: Arial, sans-serif; background: #f4f4f4; margin: 0; padding: 20px;">
+                    <div style="max-width: 600px; margin: 0 auto; background: #ffffff; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); overflow: hidden;">
+                        
+                        <!-- HEADER -->
+                        <div style="background: linear-gradient(135deg, #e63946, #f77f00); padding: 25px 20px; text-align: center; color: #fff;">
+                            <h1 style="margin: 0; font-size: 26px;">🚌 Jayam Travels</h1>
+                            <p style="margin: 5px 0 0; font-size: 14px; opacity: 0.9;">Booking Confirmed!</p>
+                        </div>
+
+                        <!-- BODY -->
+                        <div style="padding: 25px 20px;">
+                            <h2 style="color: #1a1a2e; margin: 0 0 15px; font-size: 20px;">Thank you for booking!</h2>
+                            <p style="color: #666; margin-bottom: 15px; font-size: 14px;">Your bus ticket has been confirmed. Please find your booking details below.</p>
+
+                            <!-- Booking Details -->
+                            <div style="background: #f8f9fa; padding: 16px; border-radius: 8px; margin-bottom: 15px;">
+                                <h3 style="color: #e63946; margin: 0 0 12px; font-size: 15px;">📋 Booking Details</h3>
+                                <table style="width: 100%; border-collapse: collapse;">
+                                    <tr>
+                                        <td style="padding: 6px 0; color: #666; font-size: 13px;"><strong>Booking ID:</strong></td>
+                                        <td style="padding: 6px 0; text-align: right; font-weight: bold; color: #e63946; font-size: 13px;">${bookingData.booking_id}</td>
+                                    </tr>
+                                    <tr>
+                                        <td style="padding: 6px 0; color: #666; font-size: 13px;"><strong>PNR:</strong></td>
+                                        <td style="padding: 6px 0; text-align: right; font-weight: bold; font-size: 13px;">${bookingData.pnr}</td>
+                                    </tr>
+                                    <tr>
+                                        <td style="padding: 6px 0; color: #666; font-size: 13px;"><strong>Bus:</strong></td>
+                                        <td style="padding: 6px 0; text-align: right; font-size: 13px;">Jayam Travels - AC Sleeper (Volvo)</td>
+                                    </tr>
+                                    <tr>
+                                        <td style="padding: 6px 0; color: #666; font-size: 13px;"><strong>Route:</strong></td>
+                                        <td style="padding: 6px 0; text-align: right; font-weight: 600; font-size: 13px;">${bookingData.from_city} → ${bookingData.to_city}</td>
+                                    </tr>
+                                    <tr>
+                                        <td style="padding: 6px 0; color: #666; font-size: 13px;"><strong>Date:</strong></td>
+                                        <td style="padding: 6px 0; text-align: right; font-size: 13px;">${formatDate(bookingData.travel_date)}</td>
+                                    </tr>
+                                    <tr>
+                                        <td style="padding: 6px 0; color: #666; font-size: 13px;"><strong>Boarding:</strong></td>
+                                        <td style="padding: 6px 0; text-align: right; font-size: 13px;">${bookingData.boarding}</td>
+                                    </tr>
+                                    <tr>
+                                        <td style="padding: 6px 0; color: #666; font-size: 13px;"><strong>Dropping:</strong></td>
+                                        <td style="padding: 6px 0; text-align: right; font-size: 13px;">${bookingData.dropping}</td>
+                                    </tr>
+                                </table>
+                            </div>
+
+                            <!-- Passenger Details -->
+                            <div style="background: #f8f9fa; padding: 16px; border-radius: 8px; margin-bottom: 15px;">
+                                <h3 style="color: #e63946; margin: 0 0 12px; font-size: 15px;">👤 Passenger Details</h3>
+                                <table style="width: 100%; border-collapse: collapse;">
+                                    <thead>
+                                        <tr style="background: #e9ecef;">
+                                            <th style="padding: 6px 8px; text-align: left; font-size: 11px;">#</th>
+                                            <th style="padding: 6px 8px; text-align: left; font-size: 11px;">Name</th>
+                                            <th style="padding: 6px 8px; text-align: left; font-size: 11px;">Age</th>
+                                            <th style="padding: 6px 8px; text-align: left; font-size: 11px;">Gender</th>
+                                            <th style="padding: 6px 8px; text-align: left; font-size: 11px;">Seat</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        ${passengerList}
+                                    </tbody>
+                                </table>
+                            </div>
+
+                            <!-- Fare Breakup -->
+                            <div style="background: #fff8f0; padding: 16px; border-radius: 8px; margin-bottom: 15px; border: 1px solid #f77f00;">
+                                <h3 style="color: #e63946; margin: 0 0 12px; font-size: 15px;">💰 Fare Breakup</h3>
+                                <table style="width: 100%; border-collapse: collapse;">
+                                    <tr>
+                                        <td style="padding: 5px 0; color: #666; font-size: 13px;">Base Fare</td>
+                                        <td style="padding: 5px 0; text-align: right; font-size: 13px;">₹${bookingData.base_fare || 0}</td>
+                                    </tr>
+                                    <tr>
+                                        <td style="padding: 5px 0; color: #666; font-size: 13px;">CGST (2.5%)</td>
+                                        <td style="padding: 5px 0; text-align: right; font-size: 13px;">₹${bookingData.cgst || 0}</td>
+                                    </tr>
+                                    <tr>
+                                        <td style="padding: 5px 0; color: #666; font-size: 13px;">SGST (2.5%)</td>
+                                        <td style="padding: 5px 0; text-align: right; font-size: 13px;">₹${bookingData.sgst || 0}</td>
+                                    </tr>
+                                    <tr>
+                                        <td style="padding: 5px 0; color: #666; font-size: 13px;">Service Fee</td>
+                                        <td style="padding: 5px 0; text-align: right; font-size: 13px;">₹${bookingData.service_fee || 15}</td>
+                                    </tr>
+                                    <tr style="border-top: 2px solid #ddd; font-weight: bold; font-size: 17px;">
+                                        <td style="padding: 8px 0 0; color: #1a1a2e; font-size: 15px;">Total Amount</td>
+                                        <td style="padding: 8px 0 0; text-align: right; color: #e63946; font-size: 15px;">₹${bookingData.total_amount}</td>
+                                    </tr>
+                                </table>
+                            </div>
+
+                            <!-- Important Information -->
+                            <div style="background: #e8f5e9; padding: 14px; border-radius: 8px; border-left: 4px solid #06A77D; margin-bottom: 15px;">
+                                <p style="margin: 0; color: #1a1a2e; font-size: 13px;">
+                                    <strong>✅ Important:</strong>
+                                    <br>
+                                    • Please carry a valid ID proof (Aadhar, PAN, Driving License)
+                                    <br>
+                                    • Arrive at the boarding point 30 minutes before departure
+                                    <br>
+                                    • Show this email or SMS at the time of boarding
+                                    <br>
+                                    • For queries: support@jayamtravels.com | 1800-XXX-XXXX
+                                </p>
+                            </div>
+
+                            <!-- Footer -->
+                            <div style="text-align: center; padding-top: 16px; border-top: 1px solid #eee; color: #999; font-size: 11px;">
+                                <p style="margin: 0;">Thank you for choosing Jayam Travels!</p>
+                                <p style="margin: 5px 0 0;">This is a system generated email. Please do not reply.</p>
+                                <p style="margin: 5px 0 0;">© ${new Date().getFullYear()} Jayam Travels. All rights reserved.</p>
+                            </div>
+                        </div>
                     </div>
-                    <div style="background: #fff; padding: 20px; border-radius: 0 0 10px 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1);">
-                        <h2 style="color: #e63946;">Booking Details</h2>
-                        <table style="width: 100%; border-collapse: collapse;">
-                            <tr><td style="padding: 8px 0;"><strong>Booking ID:</strong></td><td style="padding: 8px 0;">${bookingData.booking_id}</td></tr>
-                            <tr><td style="padding: 8px 0;"><strong>PNR:</strong></td><td style="padding: 8px 0;">${bookingData.pnr}</td></tr>
-                            <tr><td style="padding: 8px 0;"><strong>Bus:</strong></td><td style="padding: 8px 0;">Jayam Travels - AC Sleeper</td></tr>
-                            <tr><td style="padding: 8px 0;"><strong>Route:</strong></td><td style="padding: 8px 0;">${bookingData.from_city} → ${bookingData.to_city}</td></tr>
-                            <tr><td style="padding: 8px 0;"><strong>Date:</strong></td><td style="padding: 8px 0;">${formatDate(bookingData.travel_date)}</td></tr>
-                            <tr><td style="padding: 8px 0;"><strong>Boarding:</strong></td><td style="padding: 8px 0;">${bookingData.boarding}</td></tr>
-                            <tr><td style="padding: 8px 0;"><strong>Dropping:</strong></td><td style="padding: 8px 0;">${bookingData.dropping}</td></tr>
-                            <tr><td style="padding: 8px 0;"><strong>Seats:</strong></td><td style="padding: 8px 0;">${Array.isArray(seats) ? seats.join(', ') : seats}</td></tr>
-                            <tr><td style="padding: 8px 0;"><strong>Passengers:</strong></td><td style="padding: 8px 0;">${passengerList}</td></tr>
-                            <tr><td style="padding: 8px 0;"><strong>Total Amount:</strong></td><td style="padding: 8px 0; color: #e63946; font-weight: bold;">₹${bookingData.total_amount}</td></tr>
-                        </table>
-                        <hr style="border: 1px solid #eee; margin: 20px 0;">
-                        <p style="color: #666; font-size: 14px; text-align: center;">
-                            <strong>Thank you for choosing Jayam Travels!</strong><br>
-                            For queries, contact: support@jayamtravels.com | 📞 1800-XXX-XXXX
-                        </p>
-                    </div>
-                </div>
+                </body>
+                </html>
+            `,
+            text: `
+                Jayam Travels - Booking Confirmed (${bookingData.booking_id})
+
+                Thank you for booking with Jayam Travels!
+
+                Booking Details:
+                -----------------
+                Booking ID: ${bookingData.booking_id}
+                PNR: ${bookingData.pnr}
+                Bus: Jayam Travels - AC Sleeper (Volvo)
+                Route: ${bookingData.from_city} → ${bookingData.to_city}
+                Date: ${formatDate(bookingData.travel_date)}
+                Boarding: ${bookingData.boarding}
+                Dropping: ${bookingData.dropping}
+                Total Amount: ₹${bookingData.total_amount}
+
+                Passengers:
+                ${passengers.map((p, i) => `  ${i+1}. ${p.name} (${p.age} yrs, ${p.gender}) - Seat: ${seats[i]}`).join('\n')}
+
+                Important Instructions:
+                - Carry valid ID proof
+                - Arrive 30 minutes before departure
+                - Show this email at boarding
+
+                For queries: support@jayamtravels.com | 1800-XXX-XXXX
+
+                © ${new Date().getFullYear()} Jayam Travels
             `
         };
 
-        await emailTransporter.sendMail(mailOptions);
+        const info = await emailTransporter.sendMail(mailOptions);
         console.log(`✅ Confirmation email sent to ${bookingData.email}`);
-        return true;
+        console.log(`📧 Message ID: ${info.messageId}`);
+        
+        return { 
+            success: true, 
+            messageId: info.messageId,
+            recipient: bookingData.email 
+        };
+
     } catch (error) {
         console.error('❌ Email sending error:', error.message);
-        return false;
+        return { 
+            success: false, 
+            error: error.message 
+        };
     }
 }
 
@@ -328,8 +482,7 @@ app.get('/', (req, res) => {
         message: 'Jayam Travels API is running',
         version: '1.0.0',
         timestamp: new Date().toISOString(),
-        environment: {
-            node_env: process.env.NODE_ENV || 'development',
+        services: {
             razorpay: razorpayInitialized ? '✅ Configured' : '❌ Not Configured',
             email: emailInitialized ? '✅ Configured' : '❌ Not Configured',
             database: process.env.DB_NAME || 'Not Set'
@@ -337,18 +490,18 @@ app.get('/', (req, res) => {
         endpoints: {
             health: 'GET /api/health',
             testDB: 'GET /api/test-db',
+            status: 'GET /api/status',
             bookings: 'POST /api/bookings',
             getBooking: 'GET /api/bookings/:booking_id',
             getBookingsByEmail: 'GET /api/bookings/email/:email',
             createOrder: 'POST /api/create-order',
             verifyPayment: 'POST /api/verify-payment',
-            cancelBooking: 'POST /api/bookings/:booking_id/cancel',
-            status: 'GET /api/status'
+            cancelBooking: 'POST /api/bookings/:booking_id/cancel'
         }
     });
 });
 
-// ====== API STATUS (Check all services) ======
+// ====== API STATUS ======
 app.get('/api/status', (req, res) => {
     const envValidation = validateEnvironment();
     
@@ -383,11 +536,7 @@ app.get('/api/health', (req, res) => {
     res.json({
         status: 'ok',
         message: 'Jayam Travels API is running',
-        timestamp: new Date().toISOString(),
-        services: {
-            razorpay: razorpayInitialized ? 'ready' : 'not_configured',
-            email: emailInitialized ? 'ready' : 'not_configured'
-        }
+        timestamp: new Date().toISOString()
     });
 });
 
@@ -496,8 +645,7 @@ app.post('/api/bookings', async (req, res) => {
             return res.status(503).json({
                 success: false,
                 error: 'Payment service is not configured',
-                message: 'Razorpay keys are not properly configured. Please contact support.',
-                details: 'Payment gateway is required for booking'
+                message: 'Razorpay keys are not properly configured. Please contact support.'
             });
         }
 
@@ -534,28 +682,37 @@ app.post('/api/bookings', async (req, res) => {
         await connection.query(query, values);
         await connection.commit();
 
-        // Send email in background (only if email is configured)
-        if (emailInitialized) {
-            const bookingData = {
-                booking_id, pnr, from_city: from, to_city: to,
-                travel_date: date, seats: seatsJson, passengers: passengersJson,
-                boarding, dropping, email, mobile, state,
-                total_amount
-            };
-            sendConfirmationEmail(bookingData).catch(err => {
-                console.error('❌ Email error:', err.message);
-            });
-        }
-
         console.log('✅ Booking created successfully:', booking_id);
+        
+        // Return booking data without waiting for email
         res.status(201).json({
             success: true,
             booking_id: booking_id,
             pnr: pnr,
             message: 'Booking created successfully',
-            payment_required: true,
-            razorpay_ready: razorpayInitialized
+            payment_required: true
         });
+
+        // ====== SEND EMAIL IN BACKGROUND (Async) ======
+        if (emailInitialized) {
+            const bookingData = {
+                booking_id, pnr, from_city: from, to_city: to,
+                travel_date: date, seats: seatsJson, passengers: passengersJson,
+                boarding, dropping, email, mobile, state,
+                total_amount, base_fare, cgst, sgst, service_fee
+            };
+            
+            // Send email after 2 minutes delay
+            setTimeout(async () => {
+                console.log(`⏳ Sending confirmation email to ${email} (after 2 min delay)`);
+                const result = await sendConfirmationEmail(bookingData);
+                if (result.success) {
+                    console.log(`✅ Confirmation email sent to ${email}`);
+                } else {
+                    console.error(`❌ Failed to send email to ${email}:`, result.error);
+                }
+            }, 120000); // 2 minutes delay
+        }
 
     } catch (error) {
         console.error('❌ Booking error:', error.message);
@@ -704,6 +861,7 @@ app.post('/api/verify-payment', async (req, res) => {
         connection = await pool.getConnection();
         await connection.beginTransaction();
 
+        // Update payment record
         await connection.query(
             `UPDATE payments 
              SET razorpay_payment_id = ?, razorpay_signature = ?, status = 'paid', updated_at = CURRENT_TIMESTAMP 
@@ -711,6 +869,7 @@ app.post('/api/verify-payment', async (req, res) => {
             [razorpay_payment_id, razorpay_signature, razorpay_order_id, booking_id]
         );
 
+        // Update booking payment status
         await connection.query(
             'UPDATE bookings SET payment_status = "paid", updated_at = CURRENT_TIMESTAMP WHERE booking_id = ?',
             [booking_id]
@@ -718,6 +877,7 @@ app.post('/api/verify-payment', async (req, res) => {
 
         await connection.commit();
         
+        // Get booking details for confirmation
         const [bookings] = await connection.query(
             'SELECT * FROM bookings WHERE booking_id = ?',
             [booking_id]
@@ -725,11 +885,41 @@ app.post('/api/verify-payment', async (req, res) => {
         
         connection.release();
 
-        // Send confirmation email
+        // ====== SEND CONFIRMATION EMAIL AFTER PAYMENT ======
         if (bookings.length > 0 && emailInitialized) {
-            sendConfirmationEmail(bookings[0]).catch(err => {
-                console.error('❌ Email error:', err.message);
-            });
+            const booking = bookings[0];
+            // Parse JSON fields
+            booking.seats = JSON.parse(booking.seats);
+            booking.passengers = JSON.parse(booking.passengers);
+            
+            const bookingData = {
+                booking_id: booking.booking_id,
+                pnr: booking.pnr,
+                from_city: booking.from_city,
+                to_city: booking.to_city,
+                travel_date: booking.travel_date,
+                seats: JSON.stringify(booking.seats),
+                passengers: JSON.stringify(booking.passengers),
+                boarding: booking.boarding,
+                dropping: booking.dropping,
+                email: booking.email,
+                mobile: booking.mobile,
+                state: booking.state,
+                total_amount: booking.total_amount,
+                base_fare: booking.base_fare,
+                cgst: booking.cgst,
+                sgst: booking.sgst,
+                service_fee: booking.service_fee
+            };
+            
+            // Send email immediately after successful payment
+            console.log(`📧 Sending confirmation email to ${booking.email}`);
+            const result = await sendConfirmationEmail(bookingData);
+            if (result.success) {
+                console.log(`✅ Confirmation email sent to ${booking.email}`);
+            } else {
+                console.error(`❌ Failed to send email to ${booking.email}:`, result.error);
+            }
         }
 
         res.json({
@@ -881,6 +1071,64 @@ app.post('/api/bookings/:booking_id/cancel', async (req, res) => {
     }
 });
 
+// ====== 7. TEST EMAIL ENDPOINT ======
+app.post('/api/test-email', async (req, res) => {
+    try {
+        const { email } = req.body;
+
+        if (!email) {
+            return res.status(400).json({ 
+                success: false,
+                error: 'Email is required' 
+            });
+        }
+
+        if (!emailInitialized) {
+            return res.status(503).json({
+                success: false,
+                error: 'Email service is not configured'
+            });
+        }
+
+        const testData = {
+            booking_id: 'TEST12345',
+            pnr: 'TESTPNR123',
+            from_city: 'Chennai',
+            to_city: 'Bangalore',
+            travel_date: new Date().toISOString(),
+            boarding: 'Koyambedu Bus Stand',
+            dropping: 'Majestic Bus Stand',
+            email: email,
+            total_amount: 899,
+            base_fare: 899,
+            cgst: 22,
+            sgst: 22,
+            service_fee: 15,
+            seats: JSON.stringify(['LB1', 'LD2']),
+            passengers: JSON.stringify([
+                { name: 'Test User 1', age: 30, gender: 'Male' },
+                { name: 'Test User 2', age: 28, gender: 'Female' }
+            ])
+        };
+
+        const result = await sendConfirmationEmail(testData);
+        
+        res.json({
+            success: result.success,
+            message: result.success ? 'Test email sent successfully' : 'Failed to send test email',
+            details: result
+        });
+
+    } catch (error) {
+        console.error('❌ Test email error:', error.message);
+        res.status(500).json({
+            success: false,
+            error: 'Failed to send test email',
+            details: error.message
+        });
+    }
+});
+
 // ====== 404 HANDLER ======
 app.use((req, res) => {
     res.status(404).json({
@@ -943,6 +1191,7 @@ app.listen(PORT, async () => {
     
     console.log('╠═══════════════════════════════════════════════════╣');
     console.log(`║   Status URL: http://localhost:${PORT}/api/status ║`);
+    console.log(`║   Test Email: POST /api/test-email              ║`);
     console.log('╚═══════════════════════════════════════════════════╝');
 });
 
