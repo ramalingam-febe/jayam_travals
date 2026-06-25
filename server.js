@@ -13,27 +13,19 @@ dotenv.config();
 
 const app = express();
 
-// ====== CORS CONFIGURATION FOR NETLIFY ======
+// ====== CORS CONFIGURATION ======
+
 const allowedOrigins = [
        'https://yogajayam.netlify.app'
- 
 ];
-
 app.use(cors({
-    origin: function(origin, callback) {
-        // Allow requests with no origin (like mobile apps, curl)
-        if (!origin) return callback(null, true);
-        if (allowedOrigins.indexOf(origin) !== -1 || process.env.NODE_ENV === 'development') {
-            callback(null, true);
-        } else {
-            console.log('Blocked CORS request from:', origin);
-            callback(null, true); // Allow all in production (remove this in production)
-        }
-    },
+    origin: '*',
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept']
 }));
+
+app.options('*', cors());
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
@@ -47,16 +39,15 @@ app.get('/', (req, res) => {
         message: 'Jayam Travels API is running',
         version: '1.0.0',
         timestamp: new Date().toISOString(),
-        environment: process.env.NODE_ENV || 'development',
         services: {
             razorpay: process.env.RAZORPAY_KEY_ID ? '✅ Configured' : '❌ Not Configured',
-            email: process.env.EMAIL_USER ? '✅ Configured' : '❌ Not Configured',
+            email: process.env.EMAIL_USER && process.env.EMAIL_PASS ? '✅ Configured' : '❌ Not Configured',
             database: process.env.DB_NAME || 'Not Set'
         }
     });
 });
 
-// ====== DATABASE CONNECTION (TiDB) ======
+// ====== DATABASE CONNECTION ======
 const pool = mysql.createPool({
     host: process.env.DB_HOST || 'gateway01.ap-northeast-1.prod.aws.tidbcloud.com',
     port: process.env.DB_PORT || 4000,
@@ -114,31 +105,75 @@ let emailInitialized = false;
 
 function initializeEmail() {
     try {
-        if (!process.env.EMAIL_USER || !process.env.EMAIL_PASS) {
-            console.warn('⚠️ Email credentials not configured');
+        const emailUser = process.env.EMAIL_USER;
+        const emailPass = process.env.EMAIL_PASS;
+
+        console.log('📧 Checking email configuration...');
+        console.log(`   EMAIL_USER: ${emailUser ? '✅ Set' : '❌ Not set'}`);
+        console.log(`   EMAIL_PASS: ${emailPass ? '✅ Set' : '❌ Not set'}`);
+
+        if (!emailUser || !emailPass) {
+            console.error('❌ Email credentials not configured');
             emailInitialized = false;
             return false;
         }
 
-        emailTransporter = nodemailer.createTransport({
-            service: 'gmail',
-            auth: {
-                user: process.env.EMAIL_USER,
-                pass: process.env.EMAIL_PASS
-            }
+        // Check if it's Gmail
+        const isGmail = emailUser.includes('@gmail.com');
+        console.log(`   Email Provider: ${isGmail ? 'Gmail' : 'Custom SMTP'}`);
+
+        let transporterConfig;
+
+        if (isGmail) {
+            // Gmail configuration
+            transporterConfig = {
+                service: 'gmail',
+                auth: {
+                    user: emailUser,
+                    pass: emailPass // This should be the App Password
+                },
+                // Add timeout settings
+                connectionTimeout: 30000,
+                greetingTimeout: 30000,
+                socketTimeout: 30000
+            };
+        } else {
+            // Custom SMTP configuration (for non-Gmail)
+            transporterConfig = {
+                host: process.env.SMTP_HOST || 'smtp.gmail.com',
+                port: process.env.SMTP_PORT || 587,
+                secure: process.env.SMTP_SECURE === 'true' || false,
+                auth: {
+                    user: emailUser,
+                    pass: emailPass
+                }
+            };
+        }
+
+        emailTransporter = nodemailer.createTransport(transporterConfig);
+
+        // Verify connection synchronously with timeout
+        console.log('📧 Verifying email connection...');
+        
+        return new Promise((resolve) => {
+            emailTransporter.verify(function(error, success) {
+                if (error) {
+                    console.error('❌ Email verification failed:', error.message);
+                    console.error('   💡 Possible reasons:');
+                    console.error('   - Invalid App Password (use 16-char password with spaces)');
+                    console.error('   - 2FA not enabled on Gmail account');
+                    console.error('   - Less secure app access blocked');
+                    console.error('   - Wrong email address');
+                    emailInitialized = false;
+                    resolve(false);
+                } else {
+                    console.log('✅ Email service ready to send emails');
+                    emailInitialized = true;
+                    resolve(true);
+                }
+            });
         });
 
-        emailTransporter.verify(function(error, success) {
-            if (error) {
-                console.error('❌ Email verification failed:', error.message);
-                emailInitialized = false;
-            } else {
-                console.log('✅ Email service ready');
-                emailInitialized = true;
-            }
-        });
-
-        return true;
     } catch (error) {
         console.error('❌ Email initialization error:', error.message);
         emailInitialized = false;
@@ -165,7 +200,7 @@ function generatePNR() {
 // ====== SEND CONFIRMATION EMAIL ======
 async function sendConfirmationEmail(bookingData) {
     if (!emailInitialized) {
-        console.warn('⚠️ Email not initialized');
+        console.warn('⚠️ Email not initialized - Skipping email send');
         return { success: false, error: 'Email service not configured' };
     }
 
@@ -198,12 +233,14 @@ async function sendConfirmationEmail(bookingData) {
                         <p style="color: #666; font-size: 14px;">Thank you for choosing Jayam Travels!</p>
                     </div>
                 </div>
-            `
+            `,
+            text: `Jayam Travels - Booking Confirmed\n\nBooking ID: ${bookingData.booking_id}\nPNR: ${bookingData.pnr}\nRoute: ${bookingData.from_city} → ${bookingData.to_city}\nTotal: ₹${bookingData.total_amount}`
         };
 
-        await emailTransporter.sendMail(mailOptions);
-        console.log(`✅ Email sent to ${bookingData.email}`);
-        return { success: true };
+        const info = await emailTransporter.sendMail(mailOptions);
+        console.log(`✅ Confirmation email sent to ${bookingData.email}`);
+        console.log(`📧 Message ID: ${info.messageId}`);
+        return { success: true, messageId: info.messageId };
     } catch (error) {
         console.error('❌ Email error:', error.message);
         return { success: false, error: error.message };
@@ -227,7 +264,6 @@ async function checkDatabaseSetup() {
         
         if (tables.length < 2) {
             console.log('⚠️ Tables not found. Please create them manually.');
-            console.log('📝 Run the CREATE TABLE statements from the documentation.');
             connection.release();
             return false;
         }
@@ -253,34 +289,73 @@ app.get('/api/health', (req, res) => {
     });
 });
 
-// Status check
+// Status check - shows all service status
 app.get('/api/status', (req, res) => {
     res.json({
         success: true,
         timestamp: new Date().toISOString(),
         services: {
-            razorpay: razorpayInitialized ? 'configured' : 'not_configured',
-            email: emailInitialized ? 'configured' : 'not_configured',
+            razorpay: razorpayInitialized ? '✅ Configured' : '❌ Not configured',
+            email: emailInitialized ? '✅ Configured' : '❌ Not configured',
             database: process.env.DB_NAME || 'Not Set'
         },
-        environment: process.env.NODE_ENV || 'development'
+        environment: process.env.NODE_ENV || 'development',
+        email_config: {
+            user: process.env.EMAIL_USER ? '✅ Set' : '❌ Not set',
+            pass: process.env.EMAIL_PASS ? '✅ Set' : '❌ Not set'
+        }
     });
 });
 
-// Test database
-app.get('/api/test-db', async (req, res) => {
-    let connection;
+// Test email endpoint
+app.post('/api/test-email', async (req, res) => {
     try {
-        connection = await pool.getConnection();
-        const [dbResult] = await connection.query('SELECT DATABASE() as current_db');
-        connection.release();
+        const { email } = req.body;
+
+        if (!email) {
+            return res.status(400).json({
+                success: false,
+                error: 'Email is required'
+            });
+        }
+
+        if (!emailInitialized) {
+            return res.status(503).json({
+                success: false,
+                error: 'Email service not configured',
+                details: 'Please check EMAIL_USER and EMAIL_PASS environment variables'
+            });
+        }
+
+        const testData = {
+            booking_id: 'TEST12345',
+            pnr: 'TESTPNR123',
+            from_city: 'Chennai',
+            to_city: 'Bangalore',
+            travel_date: new Date().toISOString(),
+            boarding: 'Koyambedu Bus Stand',
+            dropping: 'Majestic Bus Stand',
+            email: email,
+            total_amount: 899,
+            base_fare: 899,
+            cgst: 22,
+            sgst: 22,
+            service_fee: 15,
+            seats: JSON.stringify(['LB1', 'LD2']),
+            passengers: JSON.stringify([
+                { name: 'Test User', age: 30, gender: 'Male' }
+            ])
+        };
+
+        const result = await sendConfirmationEmail(testData);
         res.json({
-            success: true,
-            database: dbResult[0].current_db,
-            message: 'Database connected successfully'
+            success: result.success,
+            message: result.success ? '✅ Test email sent successfully' : '❌ Failed to send test email',
+            details: result
         });
+
     } catch (error) {
-        if (connection) connection.release();
+        console.error('❌ Test email error:', error.message);
         res.status(500).json({
             success: false,
             error: error.message
@@ -724,12 +799,16 @@ app.listen(PORT, async () => {
     console.log('╠═══════════════════════════════════════════════════╣');
 
     initializeRazorpay();
-    initializeEmail();
+    await initializeEmail();
     await checkDatabaseSetup();
 
     console.log('╠═══════════════════════════════════════════════════╣');
     console.log(`║   Razorpay: ${razorpayInitialized ? '✅ Configured' : '❌ Not configured'}`);
     console.log(`║   Email: ${emailInitialized ? '✅ Configured' : '❌ Not configured'}`);
+    console.log(`║   Database: ${process.env.DB_NAME || 'Not Set'}`);
+    console.log('╠═══════════════════════════════════════════════════╣');
+    console.log(`║   Test Email: POST /api/test-email              ║`);
+    console.log(`║   Status: GET /api/status                       ║`);
     console.log('╚═══════════════════════════════════════════════════╝');
 });
 
