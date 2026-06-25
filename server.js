@@ -13,7 +13,7 @@ const app = express();
 
 // ====== CORS CONFIGURATION ======
 app.use(cors({
-    origin: ['http://localhost:5500', 'http://localhost:3000', 'https://*.onrender.com'],
+    origin: ['http://localhost:5500', 'http://localhost:3000', 'https://yogajayam.netlify.app'],
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
