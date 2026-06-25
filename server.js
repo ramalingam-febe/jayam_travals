@@ -15,8 +15,8 @@ const app = express();
 
 // ====== CORS CONFIGURATION FOR NETLIFY ======
 const allowedOrigins = [
-       'https://yogajayam.netlify.app',
-    'https://*.onrender.com'
+       'https://yogajayam.netlify.app'
+ 
 ];
 
 app.use(cors({
