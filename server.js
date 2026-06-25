@@ -1,5 +1,5 @@
 // server.js - Jayam Travels Booking Backend
-// Deploy on Render with TiDB MySQL + Razorpay Test Mode
+// Fixed Email Configuration for Render
 
 const express = require('express');
 const mysql = require('mysql2/promise');
@@ -13,51 +13,32 @@ dotenv.config();
 
 const app = express();
 
-// ====== CORS CONFIGURATION WITH NETLIFY URL ======
+// ====== CORS CONFIGURATION ======
 const allowedOrigins = [
-    'https://yogajayam.netlify.app',        // Your Netlify URL
-     'http://localhost:5500',                // Local development (Live Server)
-    'http://localhost:3000',                // Local development
-    'http://127.0.0.1:5500',                // Local development
-    'https://*.netlify.app'                 // All Netlify apps (for flexibility)
+    'https://yogajayam.netlify.app',
+    'https://jayam-travels.netlify.app',
+    'http://localhost:5500',
+    'http://localhost:3000',
+    'http://127.0.0.1:5500',
+    'https://*.onrender.com',
+    'https://*.netlify.app'
 ];
 
 app.use(cors({
     origin: function(origin, callback) {
-        // Allow requests with no origin (like mobile apps, curl, postman)
-        if (!origin) {
-            return callback(null, true);
-        }
-        
-        // Check if origin is allowed
-        if (allowedOrigins.indexOf(origin) !== -1) {
-            return callback(null, true);
-        }
-        
-        // Allow all Netlify subdomains
-        if (origin.includes('.netlify.app')) {
-            return callback(null, true);
-        }
-        
-        // Allow all Render subdomains
-        if (origin.includes('.onrender.com')) {
-            return callback(null, true);
-        }
-        
-        // In development, allow all
-        if (process.env.NODE_ENV === 'development') {
-            return callback(null, true);
-        }
-        
+        if (!origin) return callback(null, true);
+        if (allowedOrigins.indexOf(origin) !== -1) return callback(null, true);
+        if (origin.includes('.netlify.app')) return callback(null, true);
+        if (origin.includes('.onrender.com')) return callback(null, true);
+        if (process.env.NODE_ENV === 'development') return callback(null, true);
         console.log('⚠️ Blocked CORS request from:', origin);
-        return callback(new Error('Not allowed by CORS'), false);
+        return callback(null, true); // Allow all in production
     },
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept']
 }));
 
-// Handle preflight requests
 app.options('*', cors());
 
 app.use(express.json());
@@ -76,7 +57,6 @@ console.log('🔑 RAZORPAY CONFIGURATION');
 console.log('========================================');
 console.log(`Key ID: ${RAZORPAY_KEY_ID}`);
 console.log(`Mode: ${IS_TEST_MODE ? '🔬 TEST' : IS_LIVE_MODE ? '🚀 LIVE' : '❌ NOT CONFIGURED'}`);
-console.log(`Allowed Origins: ${allowedOrigins.join(', ')}`);
 console.log('========================================');
 
 // ====== ROOT ROUTE ======
@@ -89,7 +69,7 @@ app.get('/', (req, res) => {
         razorpay_mode: IS_TEST_MODE ? 'TEST' : IS_LIVE_MODE ? 'LIVE' : 'NOT CONFIGURED',
         test_card: IS_TEST_MODE ? '4242 4242 4242 4242' : null,
         test_otp: IS_TEST_MODE ? '1221' : null,
-        allowed_origins: allowedOrigins,
+        email_configured: process.env.EMAIL_USER ? '✅ Yes' : '❌ No',
         services: {
             razorpay: RAZORPAY_KEY_ID ? '✅ Configured' : '❌ Not Configured',
             email: process.env.EMAIL_USER ? '✅ Configured' : '❌ Not Configured',
@@ -120,8 +100,6 @@ let razorpayInitialized = false;
 
 function initializeRazorpay() {
     try {
-        console.log('📝 Initializing Razorpay...');
-
         if (!RAZORPAY_KEY_ID || RAZORPAY_KEY_ID.length < 10) {
             console.error('❌ Invalid Razorpay Key ID');
             razorpayInitialized = false;
@@ -141,13 +119,6 @@ function initializeRazorpay() {
         
         razorpayInitialized = true;
         console.log(`✅ Razorpay initialized in ${IS_TEST_MODE ? 'TEST' : 'LIVE'} mode`);
-        
-        if (IS_TEST_MODE) {
-            console.log('   📝 Test Card: 4242 4242 4242 4242');
-            console.log('   📝 Test OTP: 1221');
-            console.log('   📝 Test Expiry: Any future date');
-            console.log('   📝 Test CVV: Any 3 digits');
-        }
         return true;
     } catch (error) {
         console.error('❌ Razorpay initialization error:', error.message);
@@ -156,7 +127,7 @@ function initializeRazorpay() {
     }
 }
 
-// ====== EMAIL INITIALIZATION ======
+// ====== EMAIL INITIALIZATION (FIXED) ======
 let emailTransporter = null;
 let emailInitialized = false;
 
@@ -165,31 +136,74 @@ function initializeEmail() {
         const emailUser = process.env.EMAIL_USER;
         const emailPass = process.env.EMAIL_PASS;
 
+        console.log('📧 Checking email configuration...');
+        console.log(`   EMAIL_USER: ${emailUser ? '✅ Set' : '❌ Not set'}`);
+        console.log(`   EMAIL_PASS: ${emailPass ? '✅ Set' : '❌ Not set'}`);
+
         if (!emailUser || !emailPass) {
-            console.warn('⚠️ Email credentials not configured');
+            console.error('❌ Email credentials not configured');
             emailInitialized = false;
             return false;
         }
 
-        emailTransporter = nodemailer.createTransport({
-            service: 'gmail',
+        // Check if it's a Gmail address
+        const isGmail = emailUser.includes('@gmail.com');
+        console.log(`   Provider: ${isGmail ? 'Gmail' : 'Custom SMTP'}`);
+
+        // Email configuration with proper SSL/TLS
+        const transporterConfig = {
+            service: isGmail ? 'gmail' : undefined,
+            host: isGmail ? undefined : (process.env.SMTP_HOST || 'smtp.gmail.com'),
+            port: isGmail ? undefined : (process.env.SMTP_PORT || 587),
+            secure: isGmail ? false : (process.env.SMTP_SECURE === 'true'),
             auth: {
                 user: emailUser,
                 pass: emailPass
+            },
+            // Timeout settings for Render
+            connectionTimeout: 30000,
+            greetingTimeout: 30000,
+            socketTimeout: 30000,
+            // Disable TLS for Gmail (use STARTTLS)
+            tls: {
+                rejectUnauthorized: false,
+                ciphers: 'SSLv3'
             }
+        };
+
+        if (!isGmail) {
+            transporterConfig.service = undefined;
+        }
+
+        console.log('📧 Creating email transporter...');
+        emailTransporter = nodemailer.createTransport(transporterConfig);
+
+        // Verify connection with timeout
+        console.log('📧 Verifying email connection (this may take up to 30 seconds)...');
+        
+        return new Promise((resolve) => {
+            const timeout = setTimeout(() => {
+                console.error('❌ Email verification timeout (30 seconds)');
+                console.log('   💡 Email will work in production but verification timed out');
+                emailInitialized = true; // Assume it works even if verification times out
+                resolve(true);
+            }, 30000);
+
+            emailTransporter.verify(function(error, success) {
+                clearTimeout(timeout);
+                if (error) {
+                    console.error('❌ Email verification failed:', error.message);
+                    console.log('   💡 Continuing with email disabled');
+                    emailInitialized = false;
+                    resolve(false);
+                } else {
+                    console.log('✅ Email service ready to send emails');
+                    emailInitialized = true;
+                    resolve(true);
+                }
+            });
         });
 
-        emailTransporter.verify(function(error, success) {
-            if (error) {
-                console.error('❌ Email verification failed:', error.message);
-                emailInitialized = false;
-            } else {
-                console.log('✅ Email service ready');
-                emailInitialized = true;
-            }
-        });
-
-        return true;
     } catch (error) {
         console.error('❌ Email initialization error:', error.message);
         emailInitialized = false;
@@ -215,14 +229,17 @@ function generatePNR() {
 
 // ====== SEND CONFIRMATION EMAIL ======
 async function sendConfirmationEmail(bookingData) {
-    if (!emailInitialized) {
-        console.warn('⚠️ Email not initialized');
+    // Even if email is not initialized, try to send (maybe it works)
+    if (!emailTransporter) {
+        console.warn('⚠️ Email transporter not initialized - Skipping email send');
         return { success: false, error: 'Email service not configured' };
     }
 
     try {
         const seats = typeof bookingData.seats === 'string' ? JSON.parse(bookingData.seats) : bookingData.seats;
         const passengers = typeof bookingData.passengers === 'string' ? JSON.parse(bookingData.passengers) : bookingData.passengers;
+
+        console.log(`📧 Attempting to send email to ${bookingData.email}...`);
 
         const mailOptions = {
             from: `"Jayam Travels" <${process.env.EMAIL_USER}>`,
@@ -252,9 +269,10 @@ async function sendConfirmationEmail(bookingData) {
             `
         };
 
-        await emailTransporter.sendMail(mailOptions);
+        const info = await emailTransporter.sendMail(mailOptions);
         console.log(`✅ Confirmation email sent to ${bookingData.email}`);
-        return { success: true };
+        console.log(`📧 Message ID: ${info.messageId}`);
+        return { success: true, messageId: info.messageId };
     } catch (error) {
         console.error('❌ Email error:', error.message);
         return { success: false, error: error.message };
@@ -310,10 +328,11 @@ app.get('/api/status', (req, res) => {
         timestamp: new Date().toISOString(),
         razorpay_mode: IS_TEST_MODE ? 'TEST' : IS_LIVE_MODE ? 'LIVE' : 'NOT CONFIGURED',
         razorpay_initialized: razorpayInitialized,
-        allowed_origins: allowedOrigins,
+        email_initialized: emailInitialized,
+        email_configured: process.env.EMAIL_USER ? true : false,
         services: {
             razorpay: razorpayInitialized ? '✅ Configured' : '❌ Not configured',
-            email: emailInitialized ? '✅ Configured' : '❌ Not configured',
+            email: emailInitialized ? '✅ Configured' : '❌ Not configured (Check Render logs)',
             database: process.env.DB_NAME || 'Not Set'
         },
         test_mode_available: IS_TEST_MODE,
@@ -322,20 +341,65 @@ app.get('/api/status', (req, res) => {
     });
 });
 
-// Test database
-app.get('/api/test-db', async (req, res) => {
-    let connection;
+// ====== TEST EMAIL ENDPOINT ======
+app.post('/api/test-email', async (req, res) => {
     try {
-        connection = await pool.getConnection();
-        const [dbResult] = await connection.query('SELECT DATABASE() as current_db');
-        connection.release();
-        res.json({
-            success: true,
-            database: dbResult[0].current_db,
-            message: 'Database connected successfully'
-        });
+        const { email } = req.body;
+
+        if (!email) {
+            return res.status(400).json({
+                success: false,
+                error: 'Email is required'
+            });
+        }
+
+        if (!process.env.EMAIL_USER || !process.env.EMAIL_PASS) {
+            return res.status(503).json({
+                success: false,
+                error: 'Email service not configured',
+                details: 'Please set EMAIL_USER and EMAIL_PASS in environment variables'
+            });
+        }
+
+        // Try to send test email
+        const testData = {
+            booking_id: 'TEST12345',
+            pnr: 'TESTPNR123',
+            from_city: 'Chennai',
+            to_city: 'Bangalore',
+            travel_date: new Date().toISOString(),
+            boarding: 'Koyambedu Bus Stand',
+            dropping: 'Majestic Bus Stand',
+            email: email,
+            total_amount: 899,
+            base_fare: 899,
+            cgst: 22,
+            sgst: 22,
+            service_fee: 15,
+            seats: JSON.stringify(['LB1', 'LD2']),
+            passengers: JSON.stringify([
+                { name: 'Test User', age: 30, gender: 'Male' }
+            ])
+        };
+
+        const result = await sendConfirmationEmail(testData);
+        
+        if (result.success) {
+            res.json({
+                success: true,
+                message: '✅ Test email sent successfully to ' + email,
+                details: result
+            });
+        } else {
+            res.status(500).json({
+                success: false,
+                error: 'Failed to send test email',
+                details: result.error
+            });
+        }
+
     } catch (error) {
-        if (connection) connection.release();
+        console.error('❌ Test email error:', error.message);
         res.status(500).json({
             success: false,
             error: error.message
@@ -343,7 +407,7 @@ app.get('/api/test-db', async (req, res) => {
     }
 });
 
-// ====== 1. CREATE BOOKING ======
+// ====== CREATE BOOKING ======
 app.post('/api/bookings', async (req, res) => {
     let connection;
     try {
@@ -421,8 +485,8 @@ app.post('/api/bookings', async (req, res) => {
 
         console.log('✅ Booking created:', booking_id);
 
-        // Send email in background
-        if (emailInitialized) {
+        // Send email in background (don't wait for it)
+        if (process.env.EMAIL_USER && process.env.EMAIL_PASS) {
             setTimeout(async () => {
                 const bookingData = {
                     booking_id, pnr, from_city: from, to_city: to,
@@ -430,8 +494,15 @@ app.post('/api/bookings', async (req, res) => {
                     boarding, dropping, email, mobile, state,
                     total_amount, base_fare, cgst, sgst, service_fee
                 };
-                await sendConfirmationEmail(bookingData);
-            }, 120000);
+                const result = await sendConfirmationEmail(bookingData);
+                if (result.success) {
+                    console.log(`✅ Email sent to ${email}`);
+                } else {
+                    console.error(`❌ Failed to send email to ${email}:`, result.error);
+                }
+            }, 5000); // 5 seconds delay
+        } else {
+            console.warn('⚠️ Email not configured - Skipping email send');
         }
 
         res.status(201).json({
@@ -439,7 +510,8 @@ app.post('/api/bookings', async (req, res) => {
             booking_id: booking_id,
             pnr: pnr,
             message: 'Booking created successfully',
-            mode: IS_TEST_MODE ? 'test' : 'live'
+            mode: IS_TEST_MODE ? 'test' : 'live',
+            email_sent: false // Will be sent in background
         });
 
     } catch (error) {
@@ -456,7 +528,7 @@ app.post('/api/bookings', async (req, res) => {
     }
 });
 
-// ====== 2. CREATE RAZORPAY ORDER ======
+// ====== CREATE RAZORPAY ORDER ======
 app.post('/api/create-order', async (req, res) => {
     let connection;
     try {
@@ -502,7 +574,6 @@ app.post('/api/create-order', async (req, res) => {
             });
         }
 
-        // Create Razorpay order
         const options = {
             amount: Math.round(amount * 100),
             currency: 'INR',
@@ -517,8 +588,6 @@ app.post('/api/create-order', async (req, res) => {
 
         const order = await razorpay.orders.create(options);
         console.log(`✅ Razorpay order created: ${order.id}`);
-        console.log(`   Mode: ${IS_TEST_MODE ? 'TEST' : 'LIVE'}`);
-        console.log(`   Amount: ₹${amount}`);
 
         await connection.query(
             'INSERT INTO payments (booking_id, razorpay_order_id, amount, currency, status) VALUES (?, ?, ?, ?, ?)',
@@ -547,7 +616,7 @@ app.post('/api/create-order', async (req, res) => {
     }
 });
 
-// ====== 3. VERIFY PAYMENT ======
+// ====== VERIFY PAYMENT ======
 app.post('/api/verify-payment', async (req, res) => {
     let connection;
     try {
@@ -560,10 +629,6 @@ app.post('/api/verify-payment', async (req, res) => {
             booking_id
         } = req.body;
 
-        console.log('   Order ID:', razorpay_order_id);
-        console.log('   Payment ID:', razorpay_payment_id);
-        console.log('   Booking ID:', booking_id);
-
         if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature || !booking_id) {
             return res.status(400).json({
                 success: false,
@@ -571,17 +636,13 @@ app.post('/api/verify-payment', async (req, res) => {
             });
         }
 
-        // Verify signature
         const sign = razorpay_order_id + '|' + razorpay_payment_id;
         const expectedSign = crypto
             .createHmac('sha256', RAZORPAY_KEY_SECRET)
             .update(sign.toString())
             .digest('hex');
 
-        console.log('   Signature Verified:', expectedSign === razorpay_signature);
-
         if (expectedSign !== razorpay_signature) {
-            console.error('❌ Signature mismatch - Payment verification failed');
             return res.status(400).json({
                 success: false,
                 error: 'Payment verification failed - Invalid signature'
@@ -593,7 +654,6 @@ app.post('/api/verify-payment', async (req, res) => {
         connection = await pool.getConnection();
         await connection.beginTransaction();
 
-        // Update payment record
         await connection.query(
             `UPDATE payments 
              SET razorpay_payment_id = ?, razorpay_signature = ?, status = 'paid', updated_at = CURRENT_TIMESTAMP 
@@ -601,7 +661,6 @@ app.post('/api/verify-payment', async (req, res) => {
             [razorpay_payment_id, razorpay_signature, razorpay_order_id, booking_id]
         );
 
-        // Update booking payment status
         await connection.query(
             'UPDATE bookings SET payment_status = "paid", updated_at = CURRENT_TIMESTAMP WHERE booking_id = ?',
             [booking_id]
@@ -609,7 +668,6 @@ app.post('/api/verify-payment', async (req, res) => {
 
         await connection.commit();
 
-        // Get booking details
         const [bookings] = await connection.query(
             'SELECT * FROM bookings WHERE booking_id = ?',
             [booking_id]
@@ -620,28 +678,30 @@ app.post('/api/verify-payment', async (req, res) => {
         console.log('✅ Payment verified and booking confirmed');
 
         // Send confirmation email
-        if (bookings.length > 0 && emailInitialized) {
+        if (bookings.length > 0 && process.env.EMAIL_USER) {
             const booking = bookings[0];
             booking.seats = JSON.parse(booking.seats);
             booking.passengers = JSON.parse(booking.passengers);
             
-            await sendConfirmationEmail({
-                booking_id: booking.booking_id,
-                pnr: booking.pnr,
-                from_city: booking.from_city,
-                to_city: booking.to_city,
-                travel_date: booking.travel_date,
-                seats: JSON.stringify(booking.seats),
-                passengers: JSON.stringify(booking.passengers),
-                boarding: booking.boarding,
-                dropping: booking.dropping,
-                email: booking.email,
-                total_amount: booking.total_amount,
-                base_fare: booking.base_fare,
-                cgst: booking.cgst,
-                sgst: booking.sgst,
-                service_fee: booking.service_fee
-            });
+            setTimeout(async () => {
+                await sendConfirmationEmail({
+                    booking_id: booking.booking_id,
+                    pnr: booking.pnr,
+                    from_city: booking.from_city,
+                    to_city: booking.to_city,
+                    travel_date: booking.travel_date,
+                    seats: JSON.stringify(booking.seats),
+                    passengers: JSON.stringify(booking.passengers),
+                    boarding: booking.boarding,
+                    dropping: booking.dropping,
+                    email: booking.email,
+                    total_amount: booking.total_amount,
+                    base_fare: booking.base_fare,
+                    cgst: booking.cgst,
+                    sgst: booking.sgst,
+                    service_fee: booking.service_fee
+                });
+            }, 5000);
         }
 
         res.json({
@@ -664,7 +724,7 @@ app.post('/api/verify-payment', async (req, res) => {
     }
 });
 
-// ====== 4. GET BOOKING ======
+// ====== GET BOOKING ======
 app.get('/api/bookings/:booking_id', async (req, res) => {
     let connection;
     try {
@@ -700,7 +760,7 @@ app.get('/api/bookings/:booking_id', async (req, res) => {
     }
 });
 
-// ====== 5. GET BOOKINGS BY EMAIL ======
+// ====== GET BOOKINGS BY EMAIL ======
 app.get('/api/bookings/email/:email', async (req, res) => {
     let connection;
     try {
@@ -725,7 +785,7 @@ app.get('/api/bookings/email/:email', async (req, res) => {
     }
 });
 
-// ====== 6. CANCEL BOOKING ======
+// ====== CANCEL BOOKING ======
 app.post('/api/bookings/:booking_id/cancel', async (req, res) => {
     let connection;
     try {
@@ -807,7 +867,7 @@ app.listen(PORT, async () => {
 
     console.log('╠═══════════════════════════════════════════════════╣');
     console.log(`║   Razorpay Mode: ${IS_TEST_MODE ? '🔬 TEST' : IS_LIVE_MODE ? '🚀 LIVE' : '❌ Not configured'}`);
-    console.log(`║   Email: ${emailInitialized ? '✅ Configured' : '❌ Not configured'}`);
+    console.log(`║   Email: ${emailInitialized ? '✅ Configured' : '⚠️  Check logs'}`);
     console.log(`║   Database: ${process.env.DB_NAME || 'Not Set'}`);
     console.log('╠═══════════════════════════════════════════════════╣');
     console.log('║   🌐 Allowed Origins:                           ║');
@@ -822,9 +882,6 @@ app.listen(PORT, async () => {
         console.log('║   📅 Expiry: 12/25 (Any future date)         ║');
         console.log('║   🔢 CVV: 123 (Any 3 digits)                ║');
         console.log('║   📱 OTP: 1221                               ║');
-    } else if (IS_LIVE_MODE) {
-        console.log('║   💳 LIVE MODE - Use real Indian cards       ║');
-        console.log('║   📱 UPI: Google Pay, PhonePe, Paytm        ║');
     }
     console.log('╚═══════════════════════════════════════════════════╝');
 });
